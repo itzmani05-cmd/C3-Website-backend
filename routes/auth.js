@@ -3,9 +3,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
 
-const ADMIN_PASSWORD = 'admin123'; // Change this in production
+const ADMIN_PASSWORD = 'admin123';
 
-// Login
+
 router.post('/login', async (req, res) => {
   try {
     const { password } = req.body;
@@ -26,7 +26,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Verify token middleware
+
 const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   
