@@ -115,7 +115,7 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
         questions.push({
           question: qText,
           options,
-          correctAnswer: correctAns,
+          correct_answer: correctAns,
           explanation: explanation || 'No explanation provided.',
           type: 'Theory-based MCQ',
           unitId,

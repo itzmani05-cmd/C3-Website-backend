@@ -42,9 +42,9 @@ const questionSchema = new mongoose.Schema({
     c: { type: String, default: null },
     d: { type: String, default: null }
   },
-  correctAnswer: {
-    type: Number,
-    enum: [0, 1, 2, 3],
+  correct_answer: {
+    type: String,
+    enum: ['a', 'b', 'c', 'd'],
     required: true
   },
   explanation: {
