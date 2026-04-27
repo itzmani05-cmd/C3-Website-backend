@@ -91,7 +91,7 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
 
         // Extract correct answer
         let correctAns = 'a';
-        const ansMatch = block.match(/(?:Correct Answer|Answer|Ans|Correct Option)\s*[\:\-\s]+\s*[\[\(]?([a-dA-D])[\]\)\.]?/i);
+        const ansMatch = block.match(/(?:Correct Answer|Answer|Ans|Correct Option)\s*[:\-\s]+\s*[\[\(\s]*([a-dA-D])(?:\s*[\)\.\,\]]|\s|$)/i);
         if (ansMatch) {
           correctAns = ansMatch[1].toLowerCase();
         }
@@ -252,7 +252,7 @@ function extractByOptions(textContent, unitId, topicId, subtopicId, maxQuestions
         }
       }
 
-      const ansMatch = block.match(/(?:Correct Answer|Answer|Ans|Correct Option)\s*[\:\-\s]+\s*[\[\(]?([a-dA-D])[\]\)\.]?/i);
+      const ansMatch = block.match(/(?:Correct Answer|Answer|Ans|Correct Option)\s*[:\-\s]+\s*[\[\(\s]*([a-dA-D])(?:\s*[\)\.\,\]]|\s|$)/i);
       const correctAns = ansMatch ? ansMatch[1].toLowerCase() : 'a';
 
       const expMatch = block.match(/Detailed Explanation:([\s\S]*?)$/i);
