@@ -54,8 +54,8 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
         const qText = qMatch ? qMatch[1].trim() : '';
         console.log(`Question text: ${qText.substring(0, 50)}...`);
 
-        // Extract options section (between Options: and Correct Answer:)
-        const optionsMatch = block.match(/Options:([\s\S]*?)(?:Correct Answer:|$)/i);
+        // Extract options section (between Options: and Answer labels)
+        const optionsMatch = block.match(/Options:([\s\S]*?)(?:Correct Answer|Answer|Ans|Correct Option|Detailed Explanation:|$)/i);
         let optionsText = optionsMatch ? optionsMatch[1].trim() : '';
 
         // Parse individual options from the options text
@@ -91,7 +91,7 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
 
         // Extract correct answer
         let correctAns = 'a';
-        const ansMatch = block.match(/Correct Answer:\s*[\[(]?([a-dA-D])[\])]?/i);
+        const ansMatch = block.match(/(?:Correct Answer|Answer|Ans|Correct Option)\s*[\:\-\s]+\s*[\[\(]?([a-dA-D])[\]\)\.]?/i);
         if (ansMatch) {
           correctAns = ansMatch[1].toLowerCase();
         }
@@ -238,7 +238,7 @@ function extractByOptions(textContent, unitId, topicId, subtopicId, maxQuestions
       const qMatch = block.match(/^([\s\S]*?)Options:/i);
       const qText = qMatch ? qMatch[1].trim() : '';
 
-      const optionsMatch = block.match(/Options:([\s\S]*?)(?:Correct Answer:|$)/i);
+      const optionsMatch = block.match(/Options:([\s\S]*?)(?:Correct Answer|Answer|Ans|Correct Option|Detailed Explanation:|$)/i);
       let optionsText = optionsMatch ? optionsMatch[1].trim() : '';
 
       const options = { a: 'Not found', b: 'Not found', c: 'Not found', d: 'Not found' };
@@ -252,7 +252,7 @@ function extractByOptions(textContent, unitId, topicId, subtopicId, maxQuestions
         }
       }
 
-      const ansMatch = block.match(/Correct Answer:\s*[\[(]?([a-dA-D])[\])]?/i);
+      const ansMatch = block.match(/(?:Correct Answer|Answer|Ans|Correct Option)\s*[\:\-\s]+\s*[\[\(]?([a-dA-D])[\]\)\.]?/i);
       const correctAns = ansMatch ? ansMatch[1].toLowerCase() : 'a';
 
       const expMatch = block.match(/Detailed Explanation:([\s\S]*?)$/i);
