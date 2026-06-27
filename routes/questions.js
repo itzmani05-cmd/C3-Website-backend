@@ -93,6 +93,28 @@ router.put('/:id', async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
+// Bulk delete questions by topicId or subtopicId
+router.delete('/delete/bulk', async (req, res) => {
+  try {
+    const { topicId, subtopicId } = req.query;
+    let query = {};
+
+    if (!topicId && !subtopicId) {
+      return res.status(400).json({ message: 'At least topicId or subtopicId is required' });
+    }
+
+    if (subtopicId && subtopicId !== 'all') {
+      query.subtopicId = subtopicId;
+    } else if (topicId && topicId !== 'all') {
+      query.topicId = topicId;
+    }
+
+    const result = await Question.deleteMany(query);
+    res.json({ message: `Successfully deleted ${result.deletedCount} questions`, deletedCount: result.deletedCount });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
 
 router.delete('/:id', async (req, res) => {
   try {
