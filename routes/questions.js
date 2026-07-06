@@ -5,6 +5,8 @@ const Question = require('../models/Question');
 const Unit = require('../models/Unit');
 const Topic = require('../models/Topic');
 const Subtopic = require('../models/Subtopic');
+const Test = require('../models/Test');
+const ExamQuestion = require('../models/ExamQuestion');
 const { verifyToken } = require('./auth');
 
 // Get all questions
@@ -63,6 +65,51 @@ router.post('/', async (req, res) => {
       message: 'Server error',
       error: error.message
     });
+  }
+});
+
+// Get all tests (for extractor/admin destination setup)
+router.get('/tests', async (req, res) => {
+  try {
+    const tests = await Test.find().sort({ name: 1 });
+    res.json(tests);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error retrieving tests', error: error.message });
+  }
+});
+
+// Create/save an exam question (for test extractor destination)
+router.post('/exam', async (req, res) => {
+  try {
+    const { testName } = req.body;
+    if (!testName) {
+      return res.status(400).json({ message: 'testName is required' });
+    }
+
+    const examQuestion = new ExamQuestion(req.body);
+    await examQuestion.save();
+
+    res.status(201).json(examQuestion);
+  } catch (error) {
+    console.error("🔥 EXAM QUESTION ERROR:", error);
+    res.status(500).json({
+      message: 'Server error saving exam question',
+      error: error.message
+    });
+  }
+});
+
+// Get count of questions in a test
+router.get('/exam/count', async (req, res) => {
+  try {
+    const { testName } = req.query;
+    if (!testName) {
+      return res.status(400).json({ message: 'testName is required' });
+    }
+    const count = await ExamQuestion.countDocuments({ testName });
+    res.json({ count });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error getting question count', error: error.message });
   }
 });
 
@@ -204,6 +251,200 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Question not found' });
     }
     res.json(question);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Create a Unit
+router.post('/units', async (req, res) => {
+  try {
+    const { name, order } = req.body;
+    if (!name) {
+      return res.status(400).json({ message: 'Unit name is required' });
+    }
+    const unit = new Unit({ name, order: order || 0 });
+    await unit.save();
+    res.status(201).json(unit);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update a Unit
+router.put('/units/:id', async (req, res) => {
+  try {
+    const { name, order } = req.body;
+    const unit = await Unit.findByIdAndUpdate(
+      req.params.id,
+      { name, order },
+      { new: true, runValidators: true }
+    );
+    if (!unit) {
+      return res.status(404).json({ message: 'Unit not found' });
+    }
+    res.json(unit);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete a Unit (Cascade deletion of Topics, Subtopics, and Questions)
+router.delete('/units/:id', async (req, res) => {
+  try {
+    const unitId = req.params.id;
+    const unit = await Unit.findById(unitId);
+    if (!unit) {
+      return res.status(404).json({ message: 'Unit not found' });
+    }
+
+    // Find topics under this unit
+    const topics = await Topic.find({ unitId });
+    const topicIds = topics.map(t => t._id);
+
+    // Find subtopics under those topics
+    const subtopics = await Subtopic.find({ topicId: { $in: topicIds } });
+    const subtopicIds = subtopics.map(st => st._id);
+
+    // Delete all questions associated with this unit, topics, or subtopics
+    await Question.deleteMany({
+      $or: [
+        { unitId },
+        { topicId: { $in: topicIds } },
+        { subtopicId: { $in: subtopicIds } }
+      ]
+    });
+
+    // Delete subtopics
+    await Subtopic.deleteMany({ topicId: { $in: topicIds } });
+
+    // Delete topics
+    await Topic.deleteMany({ unitId });
+
+    // Delete unit
+    await Unit.findByIdAndDelete(unitId);
+
+    res.json({ message: 'Unit and all associated topics, subtopics, and questions deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Create a Topic
+router.post('/topics', async (req, res) => {
+  try {
+    const { name, unitId, order } = req.body;
+    if (!name || !unitId) {
+      return res.status(400).json({ message: 'Topic name and unitId are required' });
+    }
+    const topic = new Topic({ name, unitId, order: order || 0 });
+    await topic.save();
+    res.status(201).json(topic);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update a Topic
+router.put('/topics/:id', async (req, res) => {
+  try {
+    const { name, unitId, order } = req.body;
+    const topic = await Topic.findByIdAndUpdate(
+      req.params.id,
+      { name, unitId, order },
+      { new: true, runValidators: true }
+    );
+    if (!topic) {
+      return res.status(404).json({ message: 'Topic not found' });
+    }
+    res.json(topic);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete a Topic (Cascade deletion of Subtopics and Questions)
+router.delete('/topics/:id', async (req, res) => {
+  try {
+    const topicId = req.params.id;
+    const topic = await Topic.findById(topicId);
+    if (!topic) {
+      return res.status(404).json({ message: 'Topic not found' });
+    }
+
+    // Find subtopics under this topic
+    const subtopics = await Subtopic.find({ topicId });
+    const subtopicIds = subtopics.map(st => st._id);
+
+    // Delete all questions associated with this topic or its subtopics
+    await Question.deleteMany({
+      $or: [
+        { topicId },
+        { subtopicId: { $in: subtopicIds } }
+      ]
+    });
+
+    // Delete subtopics
+    await Subtopic.deleteMany({ topicId });
+
+    // Delete topic
+    await Topic.findByIdAndDelete(topicId);
+
+    res.json({ message: 'Topic and all associated subtopics and questions deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Create a Subtopic
+router.post('/subtopics', async (req, res) => {
+  try {
+    const { name, topicId, order } = req.body;
+    if (!name || !topicId) {
+      return res.status(400).json({ message: 'Subtopic name and topicId are required' });
+    }
+    const subtopic = new Subtopic({ name, topicId, order: order || 0 });
+    await subtopic.save();
+    res.status(201).json(subtopic);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update a Subtopic
+router.put('/subtopics/:id', async (req, res) => {
+  try {
+    const { name, topicId, order } = req.body;
+    const subtopic = await Subtopic.findByIdAndUpdate(
+      req.params.id,
+      { name, topicId, order },
+      { new: true, runValidators: true }
+    );
+    if (!subtopic) {
+      return res.status(404).json({ message: 'Subtopic not found' });
+    }
+    res.json(subtopic);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete a Subtopic (Cascade deletion of Questions)
+router.delete('/subtopics/:id', async (req, res) => {
+  try {
+    const subtopicId = req.params.id;
+    const subtopic = await Subtopic.findById(subtopicId);
+    if (!subtopic) {
+      return res.status(404).json({ message: 'Subtopic not found' });
+    }
+
+    // Delete all questions associated with this subtopic
+    await Question.deleteMany({ subtopicId });
+
+    // Delete subtopic
+    await Subtopic.findByIdAndDelete(subtopicId);
+
+    res.json({ message: 'Subtopic and all associated questions deleted successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }

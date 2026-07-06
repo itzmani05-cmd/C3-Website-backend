@@ -16,7 +16,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/admin_panel_db')
+mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/admin_panel_db')
   .then(() => console.log('MongoDB Connected'))
   .catch(err => console.error('MongoDB Connection Error:', err));
 
@@ -25,6 +25,7 @@ const { router: authRouter } = require('./routes/auth');
 app.use('/api/auth', authRouter);
 app.use('/api/questions', require('./routes/questions'));
 app.use('/api/ai', require('./routes/ai'));
+app.use('/api/exam', require('./routes/exam'));
 
 // Health check
 app.get('/api/health', (req, res) => {
