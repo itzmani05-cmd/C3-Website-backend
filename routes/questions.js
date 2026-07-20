@@ -7,6 +7,7 @@ const Topic = require('../models/Topic');
 const Subtopic = require('../models/Subtopic');
 const Test = require('../models/Test');
 const ExamQuestion = require('../models/ExamQuestion');
+const StudentExam = require('../models/StudentExam');
 const { verifyToken } = require('./auth');
 
 // Get all questions
@@ -78,6 +79,75 @@ router.get('/tests', async (req, res) => {
   }
 });
 
+// Create a Test
+router.post('/tests', async (req, res) => {
+  try {
+    const { name, publishToStudent } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Test name is required' });
+    }
+
+    const existing = await Test.findOne({ name: name.trim() });
+    if (existing) {
+      return res.status(400).json({ message: 'A test with this name already exists' });
+    }
+
+    const test = new Test({ name: name.trim(), publishToStudent: !!publishToStudent });
+    await test.save();
+    res.status(201).json(test);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error creating test', error: error.message });
+  }
+});
+
+// Update a Test
+router.put('/tests/:id', async (req, res) => {
+  try {
+    const { name, publishToStudent } = req.body;
+    const update = {};
+    if (name !== undefined) {
+      if (!name.trim()) {
+        return res.status(400).json({ message: 'Test name cannot be empty' });
+      }
+      update.name = name.trim();
+    }
+    if (publishToStudent !== undefined) {
+      update.publishToStudent = !!publishToStudent;
+    }
+
+    const test = await Test.findByIdAndUpdate(
+      req.params.id,
+      update,
+      { new: true, runValidators: true }
+    );
+    if (!test) {
+      return res.status(404).json({ message: 'Test not found' });
+    }
+    res.json(test);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error updating test', error: error.message });
+  }
+});
+
+// Delete a Test (Cascade deletion of ExamQuestions and StudentExam attempts)
+router.delete('/tests/:id', async (req, res) => {
+  try {
+    const testId = req.params.id;
+    const test = await Test.findById(testId);
+    if (!test) {
+      return res.status(404).json({ message: 'Test not found' });
+    }
+
+    await ExamQuestion.deleteMany({ $or: [{ testId }, { testName: test.name }] });
+    await StudentExam.deleteMany({ $or: [{ testId }, { testName: test.name }] });
+    await Test.findByIdAndDelete(testId);
+
+    res.json({ message: 'Test and all associated exam questions and student attempts deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error deleting test', error: error.message });
+  }
+});
+
 // Create/save an exam question (for test extractor destination)
 router.post('/exam', async (req, res) => {
   try {
@@ -96,6 +166,22 @@ router.post('/exam', async (req, res) => {
       message: 'Server error saving exam question',
       error: error.message
     });
+  }
+});
+
+// Get all questions belonging to a test (for admin PDF/Word export)
+router.get('/exam', async (req, res) => {
+  try {
+    const { testId, testName } = req.query;
+    if (!testId && !testName) {
+      return res.status(400).json({ message: 'testId or testName is required' });
+    }
+
+    const query = testId ? { testId } : { testName };
+    const questions = await ExamQuestion.find(query).sort({ createdAt: 1 });
+    res.json(questions);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error retrieving exam questions', error: error.message });
   }
 });
 
