@@ -277,11 +277,49 @@ router.post('/submit', verifyToken, async (req, res) => {
   }
 });
 
+// ─── GET /api/exam/admin/tests-summary ────────────────────────────────────────
+// One row per test that has at least one submitted attempt, with aggregate
+// stats for the admin Results landing page (master view).
+router.get('/admin/tests-summary', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const summary = await StudentExam.aggregate([
+      { $match: { submitted: true } },
+      {
+        $group: {
+          _id: { testId: '$testId', testName: '$testName' },
+          studentsAttempted: { $sum: 1 },
+          lastSubmittedAt: { $max: '$submittedAt' },
+          averagePercentage: { $avg: '$percentage' }
+        }
+      },
+      { $sort: { lastSubmittedAt: -1 } }
+    ]);
+
+    res.json(summary.map((row) => ({
+      testId: row._id.testId || null,
+      testName: row._id.testName,
+      studentsAttempted: row.studentsAttempted,
+      lastSubmittedAt: row.lastSubmittedAt,
+      averagePercentage: typeof row.averagePercentage === 'number' ? parseFloat(row.averagePercentage.toFixed(2)) : 0
+    })));
+  } catch (error) {
+    res.status(500).json({ message: 'Server error retrieving test summary', error: error.message });
+  }
+});
+
 // ─── GET /api/exam/admin/results ──────────────────────────────────────────────
+// Optionally filter to a single test via ?testId= or ?testName= (detail view).
 router.get('/admin/results', verifyToken, isAdmin, async (req, res) => {
   try {
-    const results = await StudentExam.find({ submitted: true })
-      .sort({ submittedAt: -1 });
+    const { testId, testName } = req.query;
+    const query = { submitted: true };
+    if (testId) {
+      query.testId = testId;
+    } else if (testName) {
+      query.testName = testName;
+    }
+
+    const results = await StudentExam.find(query).sort({ submittedAt: -1 });
     res.json(results);
   } catch (error) {
     res.status(500).json({ message: 'Server error retrieving results', error: error.message });

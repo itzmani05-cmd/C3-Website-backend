@@ -199,6 +199,52 @@ router.get('/exam/count', async (req, res) => {
   }
 });
 
+// Update a single exam question (for test question fixer)
+router.put('/exam/:id', async (req, res) => {
+  try {
+    const examQuestion = await ExamQuestion.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+    if (!examQuestion) {
+      return res.status(404).json({ message: 'Exam question not found' });
+    }
+    res.json(examQuestion);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Bulk delete exam questions belonging to a test (keeps the Test itself)
+router.delete('/exam/delete/bulk', async (req, res) => {
+  try {
+    const { testId, testName } = req.query;
+    if (!testId && !testName) {
+      return res.status(400).json({ message: 'testId or testName is required' });
+    }
+
+    const query = testId ? { testId } : { testName };
+    const result = await ExamQuestion.deleteMany(query);
+    res.json({ message: `Successfully deleted ${result.deletedCount} questions`, deletedCount: result.deletedCount });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete a single exam question
+router.delete('/exam/:id', async (req, res) => {
+  try {
+    const examQuestion = await ExamQuestion.findByIdAndDelete(req.params.id);
+    if (!examQuestion) {
+      return res.status(404).json({ message: 'Exam question not found' });
+    }
+    res.json({ message: 'Exam question deleted' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
 router.post('/upload', async (req, res) => {
   try {
     const { image } = req.body;
