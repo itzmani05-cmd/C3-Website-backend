@@ -3,7 +3,18 @@ const router = express.Router();
 const StudentExam = require('../models/StudentExam');
 const ExamQuestion = require('../models/ExamQuestion');
 const Test = require('../models/Test');
+const User = require('../models/User');
 const { verifyToken } = require('./auth');
+
+const attachStudentNames = async (studentExams) => {
+  const emails = [...new Set(studentExams.map((r) => r.studentEmail))];
+  const users = await User.find({ email: { $in: emails } }).select('email name');
+  const nameByEmail = new Map(users.map((u) => [u.email, u.name]));
+  return studentExams.map((r) => {
+    const obj = r.toObject ? r.toObject() : r;
+    return { ...obj, studentName: nameByEmail.get(obj.studentEmail) || '' };
+  });
+};
 
 const EXAM_DURATION_SEC = 180 * 60;
 
@@ -320,7 +331,7 @@ router.get('/admin/results', verifyToken, isAdmin, async (req, res) => {
     }
 
     const results = await StudentExam.find(query).sort({ submittedAt: -1 });
-    res.json(results);
+    res.json(await attachStudentNames(results));
   } catch (error) {
     res.status(500).json({ message: 'Server error retrieving results', error: error.message });
   }
@@ -339,8 +350,9 @@ router.get('/admin/results/:id', verifyToken, isAdmin, async (req, res) => {
         { testName: studentExam.testName }
       ]
     });
+    const [studentExamWithName] = await attachStudentNames([studentExam]);
     res.json({
-      studentExam,
+      studentExam: studentExamWithName,
       questions
     });
   } catch (error) {

@@ -96,7 +96,7 @@ router.post('/login', loginRateLimiter, async (req, res) => {
 
 const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
-  
+
   if (!token) {
     return res.status(401).json({ message: 'No token provided' });
   }
@@ -105,10 +105,119 @@ const verifyToken = (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'defaultsecret');
     req.user = decoded;
     next();
-  } 
+  }
   catch (error) {
     res.status(401).json({ message: 'Invalid token' });
   }
 };
+
+const isAdmin = (req, res, next) => {
+  if (req.user && req.user.role && req.user.role.toLowerCase() === 'admin') {
+    next();
+  } else {
+    res.status(403).json({ message: 'Access denied: Admin only' });
+  }
+};
+
+// ─── GET /api/auth/admin/students ─────────────────────────────────────────────
+router.get('/admin/students', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const students = await User.find({ role: { $in: ['Student', 'student'] } })
+      .select('-password')
+      .sort({ name: 1, email: 1 });
+    res.json(students);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error retrieving students', error: error.message });
+  }
+});
+
+// ─── POST /api/auth/admin/students ────────────────────────────────────────────
+router.post('/admin/students', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ message: 'Student name is required' });
+    }
+    if (typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ message: 'Student email is required' });
+    }
+    if (typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await User.findOne({ email: normalizedEmail });
+    if (existing) {
+      return res.status(400).json({ message: 'A user with this email already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const student = new User({
+      name: name.trim(),
+      email: normalizedEmail,
+      password: hashedPassword,
+      role: 'student'
+    });
+    await student.save();
+
+    const { password: _pw, ...studentData } = student.toObject();
+    res.status(201).json(studentData);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error creating student', error: error.message });
+  }
+});
+
+// ─── PUT /api/auth/admin/students/:id ─────────────────────────────────────────
+router.put('/admin/students/:id', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { name, email, status } = req.body;
+    const update = {};
+
+    if (name !== undefined) {
+      if (!name.trim()) {
+        return res.status(400).json({ message: 'Student name cannot be empty' });
+      }
+      update.name = name.trim();
+    }
+    if (email !== undefined) {
+      if (!email.trim()) {
+        return res.status(400).json({ message: 'Student email cannot be empty' });
+      }
+      update.email = email.trim().toLowerCase();
+    }
+    if (status !== undefined) {
+      update.status = status;
+    }
+
+    const student = await User.findOneAndUpdate(
+      { _id: req.params.id, role: { $in: ['Student', 'student'] } },
+      update,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+    res.json(student);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'A user with this email already exists' });
+    }
+    res.status(500).json({ message: 'Server error updating student', error: error.message });
+  }
+});
+
+// ─── DELETE /api/auth/admin/students/:id ──────────────────────────────────────
+router.delete('/admin/students/:id', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const student = await User.findOneAndDelete({ _id: req.params.id, role: { $in: ['Student', 'student'] } });
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+    res.json({ message: 'Student deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error deleting student', error: error.message });
+  }
+});
 
 module.exports = { router, verifyToken };
