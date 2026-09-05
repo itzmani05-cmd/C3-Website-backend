@@ -1,27 +1,19 @@
 const mongoose = require('mongoose');
 
-const questionSchema = new mongoose.Schema({
-  unitId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Unit',
+const dailyQuestionSchema = new mongoose.Schema({
+  date: {
+    // Stored as 'YYYY-MM-DD' so questions can be grouped/counted per day without timezone drift.
+    type: String,
     required: true
-  },
-  topicId: {
-    // Optional: a unit with no topics under it can still hold questions directly.
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Topic',
-    default: null
-  },
-  subtopicId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Subtopic',
-    default: null,
   },
   type: {
     type: String,
-    enum: ['Theory-based MCQ', 'Numerical/Problem-based', 'Assertion-Reason',
-           'Match the Following', 'Statement type (True/False)', 'Diagram-based'],
     default: 'Theory-based MCQ'
+  },
+  answerType: {
+    type: String,
+    enum: ['single', 'multiple', 'numerical'],
+    default: 'single'
   },
   question: {
     type: String,
@@ -30,11 +22,6 @@ const questionSchema = new mongoose.Schema({
   questionImage: {
     type: String,
     default: null
-  },
-  answerType: {
-    type: String,
-    enum: ['single', 'multiple', 'numerical'],
-    default: 'single'
   },
   options: {
     a: { type: String, default: '' },
@@ -71,20 +58,9 @@ const questionSchema = new mongoose.Schema({
   explanationImage: {
     type: String,
     default: null
-  },
-  status: {
-    type: String,
-    enum: ['pending', 'accepted', 'rejected'],
-    default: 'pending'
-  },
-  is_published: {
-    type: Boolean,
-    default: false
-  },
-  timestamp: {
-    type: Date,
-    default: Date.now
   }
+}, {
+  timestamps: true
 });
 
-module.exports = mongoose.model('Question', questionSchema);
+module.exports = mongoose.model('DailyQuestion', dailyQuestionSchema, 'DailyQuestions');

@@ -17,7 +17,10 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/admin_panel_db')
-  .then(() => console.log('MongoDB Connected'))
+  .then(() => {
+    console.log('MongoDB Connected');
+    require('./jobs/dailyChallengeScheduler').startDailyChallengeScheduler();
+  })
   .catch(err => console.error('MongoDB Connection Error:', err));
 
 // Routes
@@ -26,6 +29,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/questions', require('./routes/questions'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/exam', require('./routes/exam'));
+app.use('/api/daily-challenges', require('./routes/dailyChallenges'));
 
 // Health check
 app.get('/api/health', (req, res) => {

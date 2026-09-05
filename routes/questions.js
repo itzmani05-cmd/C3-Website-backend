@@ -6,12 +6,76 @@ const Unit = require('../models/Unit');
 const Topic = require('../models/Topic');
 const Subtopic = require('../models/Subtopic');
 const Test = require('../models/Test');
+const Exam = require('../models/Exam');
 const ExamQuestion = require('../models/ExamQuestion');
 const StudentExam = require('../models/StudentExam');
+const DailyQuestion = require('../models/DailyQuestion');
+const DailyChallenge = require('../models/DailyChallenge');
+const DailyChallengeAttempt = require('../models/DailyChallengeAttempt');
+const User = require('../models/User');
 const { verifyToken } = require('./auth');
 
+// This entire router manages authored content (curriculum, questions, tests, exams) —
+// every route requires a logged-in user; individual routes further restrict to admins below.
+router.use(verifyToken);
+
+const isAdmin = (req, res, next) => {
+  if (req.user && req.user.role && req.user.role.toLowerCase() === 'admin') {
+    next();
+  } else {
+    res.status(403).json({ message: 'Access denied: Admin only' });
+  }
+};
+
+const MAX_IMAGE_BYTES = 150 * 1024; // 150KB — images are stored inline as base64 in MongoDB documents,
+// and a question can carry up to 6 of them (question + 4 options + explanation), so unbounded
+// uploads risk bloating documents (Daily Challenges snapshot-copy question images too).
+
+function base64ByteLength(value) {
+  if (typeof value !== 'string' || !value) return 0;
+  const data = value.includes(',') ? value.split(',')[1] : value;
+  return Buffer.byteLength(data, 'base64');
+}
+
+// Checks every image-bearing field a question payload can carry (questionImage, explanationImage,
+// optionImages as either an {a,b,c,d} map or an array) and returns an error message if any exceeds
+// MAX_IMAGE_BYTES, or null if all are within limit. Call this before saving any question-shaped body.
+function findOversizedImage(body) {
+  if (!body || typeof body !== 'object') return null;
+
+  if (base64ByteLength(body.questionImage) > MAX_IMAGE_BYTES) {
+    return 'Question image is too large. Maximum allowed size is 150KB.';
+  }
+  if (base64ByteLength(body.explanationImage) > MAX_IMAGE_BYTES) {
+    return 'Explanation image is too large. Maximum allowed size is 150KB.';
+  }
+
+  const optionImages = body.optionImages;
+  if (optionImages && typeof optionImages === 'object') {
+    const entries = Array.isArray(optionImages) ? optionImages.entries() : Object.entries(optionImages);
+    for (const [key, value] of entries) {
+      if (base64ByteLength(value) > MAX_IMAGE_BYTES) {
+        return `Option ${typeof key === 'number' ? key + 1 : String(key).toUpperCase()} image is too large. Maximum allowed size is 150KB.`;
+      }
+    }
+  }
+
+  return null;
+}
+
+// Curriculum browsing is the one route students can also hit directly (soft-scoped to
+// their own enrolled exam(s) below) — every other route in this file is admin-only.
+// Returns null for non-students (no restriction), or the (possibly empty) list of exam
+// ids a student is enrolled in — an empty list must still filter results down to nothing,
+// not fall back to "unrestricted".
+const getStudentExamIds = async (req) => {
+  if (!req.user || req.user.role !== 'student') return null;
+  const student = await User.findOne({ email: req.user.email }).select('examIds');
+  return (student?.examIds || []).map((id) => id.toString());
+};
+
 // Get all questions
-router.get('/', async (req, res) => {
+router.get('/', isAdmin, async (req, res) => {
   try {
     const { unitId, topicId, subtopicId, status } = req.query;
     let query = {};
@@ -28,12 +92,15 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', isAdmin, async (req, res) => {
   try {
-    const { topicId, subtopicId } = req.body;
+    const { unitId, topicId, subtopicId } = req.body;
 
+    if (!unitId) {
+      return res.status(400).json({ message: 'unitId is required' });
+    }
     if (!topicId) {
-      return res.status(400).json({ message: 'topicId is required' });
+      req.body.topicId = null;
     }
     if (!subtopicId) {
       req.body.subtopicId = null;
@@ -46,11 +113,16 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ message: 'Invalid subtopicId' });
       }
 
-      if (subtopic.topicId.toString() !== topicId) {
+      if (topicId && subtopic.topicId.toString() !== topicId) {
         return res.status(400).json({
           message: 'subtopic does not belong to given topic'
         });
       }
+    }
+
+    const oversizedImageError = findOversizedImage(req.body);
+    if (oversizedImageError) {
+      return res.status(413).json({ message: oversizedImageError });
     }
 
     const question = new Question(req.body);
@@ -69,10 +141,116 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Get all tests (for extractor/admin destination setup)
-router.get('/tests', async (req, res) => {
+// Get all exams (site is scaling to cover multiple exams, e.g. TNPSC AE, TRB, etc.)
+router.get('/exams', isAdmin, async (req, res) => {
   try {
-    const tests = await Test.find().sort({ name: 1 });
+    const exams = await Exam.find().sort({ name: 1 });
+    res.json(exams);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error retrieving exams', error: error.message });
+  }
+});
+
+// Create an Exam
+router.post('/exams', isAdmin, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Exam name is required' });
+    }
+
+    const existing = await Exam.findOne({ name: name.trim() });
+    if (existing) {
+      return res.status(400).json({ message: 'An exam with this name already exists' });
+    }
+
+    const exam = new Exam({ name: name.trim() });
+    await exam.save();
+    res.status(201).json(exam);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error creating exam', error: error.message });
+  }
+});
+
+// Update an Exam
+router.put('/exams/:id', isAdmin, async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Exam name cannot be empty' });
+    }
+
+    const exam = await Exam.findByIdAndUpdate(
+      req.params.id,
+      { name: name.trim() },
+      { new: true, runValidators: true }
+    );
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+    res.json(exam);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error updating exam', error: error.message });
+  }
+});
+
+// Delete an Exam (cascades to everything scoped under it: units/topics/subtopics/
+// questions, tests/exam questions/student attempts, daily challenges/attempts, and
+// unenrolls any student who had it in their examIds)
+router.delete('/exams/:id', isAdmin, async (req, res) => {
+  try {
+    const examId = req.params.id;
+    const exam = await Exam.findById(examId);
+    if (!exam) {
+      return res.status(404).json({ message: 'Exam not found' });
+    }
+
+    const units = await Unit.find({ examId });
+    const unitIds = units.map((u) => u._id);
+    const topics = await Topic.find({ unitId: { $in: unitIds } });
+    const topicIds = topics.map((t) => t._id);
+    const subtopics = await Subtopic.find({ topicId: { $in: topicIds } });
+    const subtopicIds = subtopics.map((st) => st._id);
+
+    await Question.deleteMany({
+      $or: [
+        { unitId: { $in: unitIds } },
+        { topicId: { $in: topicIds } },
+        { subtopicId: { $in: subtopicIds } }
+      ]
+    });
+    await Subtopic.deleteMany({ topicId: { $in: topicIds } });
+    await Topic.deleteMany({ unitId: { $in: unitIds } });
+    await Unit.deleteMany({ examId });
+
+    const tests = await Test.find({ examId });
+    const testIds = tests.map((t) => t._id);
+    const testNames = tests.map((t) => t.name);
+    await ExamQuestion.deleteMany({ $or: [{ testId: { $in: testIds } }, { testName: { $in: testNames } }] });
+    await StudentExam.deleteMany({ $or: [{ testId: { $in: testIds } }, { testName: { $in: testNames } }] });
+    await Test.deleteMany({ examId });
+
+    const dailyChallenges = await DailyChallenge.find({ examId });
+    const dailyChallengeIds = dailyChallenges.map((c) => c._id);
+    await DailyChallengeAttempt.deleteMany({ challengeId: { $in: dailyChallengeIds } });
+    await DailyChallenge.deleteMany({ examId });
+
+    await User.updateMany({ examIds: examId }, { $pull: { examIds: examId } });
+
+    await Exam.findByIdAndDelete(examId);
+
+    res.json({ message: 'Exam and all associated units, tests, daily challenges, and results deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error deleting exam', error: error.message });
+  }
+});
+
+// Get all tests (for extractor/admin destination setup), optionally scoped to an exam
+router.get('/tests', isAdmin, async (req, res) => {
+  try {
+    const { examId } = req.query;
+    const query = examId ? { examId } : {};
+    const tests = await Test.find(query).sort({ name: 1 }).populate('examId', 'name');
     res.json(tests);
   } catch (error) {
     res.status(500).json({ message: 'Server error retrieving tests', error: error.message });
@@ -80,19 +258,26 @@ router.get('/tests', async (req, res) => {
 });
 
 // Create a Test
-router.post('/tests', async (req, res) => {
+router.post('/tests', isAdmin, async (req, res) => {
   try {
-    const { name, publishToStudent } = req.body;
+    const { name, publishToStudent, examId } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ message: 'Test name is required' });
     }
-
-    const existing = await Test.findOne({ name: name.trim() });
-    if (existing) {
-      return res.status(400).json({ message: 'A test with this name already exists' });
+    if (!examId) {
+      return res.status(400).json({ message: 'examId is required' });
+    }
+    const exam = await Exam.findById(examId);
+    if (!exam) {
+      return res.status(400).json({ message: 'Exam not found' });
     }
 
-    const test = new Test({ name: name.trim(), publishToStudent: !!publishToStudent });
+    const existing = await Test.findOne({ name: name.trim(), examId });
+    if (existing) {
+      return res.status(400).json({ message: 'A test with this name already exists for this exam' });
+    }
+
+    const test = new Test({ name: name.trim(), publishToStudent: !!publishToStudent, examId });
     await test.save();
     res.status(201).json(test);
   } catch (error) {
@@ -101,9 +286,9 @@ router.post('/tests', async (req, res) => {
 });
 
 // Update a Test
-router.put('/tests/:id', async (req, res) => {
+router.put('/tests/:id', isAdmin, async (req, res) => {
   try {
-    const { name, publishToStudent } = req.body;
+    const { name, publishToStudent, examId } = req.body;
     const update = {};
     if (name !== undefined) {
       if (!name.trim()) {
@@ -114,12 +299,15 @@ router.put('/tests/:id', async (req, res) => {
     if (publishToStudent !== undefined) {
       update.publishToStudent = !!publishToStudent;
     }
+    if (examId !== undefined) {
+      update.examId = examId;
+    }
 
     const test = await Test.findByIdAndUpdate(
       req.params.id,
       update,
       { new: true, runValidators: true }
-    );
+    ).populate('examId', 'name');
     if (!test) {
       return res.status(404).json({ message: 'Test not found' });
     }
@@ -130,7 +318,7 @@ router.put('/tests/:id', async (req, res) => {
 });
 
 // Delete a Test (Cascade deletion of ExamQuestions and StudentExam attempts)
-router.delete('/tests/:id', async (req, res) => {
+router.delete('/tests/:id', isAdmin, async (req, res) => {
   try {
     const testId = req.params.id;
     const test = await Test.findById(testId);
@@ -149,11 +337,16 @@ router.delete('/tests/:id', async (req, res) => {
 });
 
 // Create/save an exam question (for test extractor destination)
-router.post('/exam', async (req, res) => {
+router.post('/exam', isAdmin, async (req, res) => {
   try {
     const { testName } = req.body;
     if (!testName) {
       return res.status(400).json({ message: 'testName is required' });
+    }
+
+    const oversizedImageError = findOversizedImage(req.body);
+    if (oversizedImageError) {
+      return res.status(413).json({ message: oversizedImageError });
     }
 
     const examQuestion = new ExamQuestion(req.body);
@@ -170,7 +363,7 @@ router.post('/exam', async (req, res) => {
 });
 
 // Get all questions belonging to a test (for admin PDF/Word export)
-router.get('/exam', async (req, res) => {
+router.get('/exam', isAdmin, async (req, res) => {
   try {
     const { testId, testName } = req.query;
     if (!testId && !testName) {
@@ -186,7 +379,7 @@ router.get('/exam', async (req, res) => {
 });
 
 // Get count of questions in a test
-router.get('/exam/count', async (req, res) => {
+router.get('/exam/count', isAdmin, async (req, res) => {
   try {
     const { testName } = req.query;
     if (!testName) {
@@ -200,8 +393,13 @@ router.get('/exam/count', async (req, res) => {
 });
 
 // Update a single exam question (for test question fixer)
-router.put('/exam/:id', async (req, res) => {
+router.put('/exam/:id', isAdmin, async (req, res) => {
   try {
+    const oversizedImageError = findOversizedImage(req.body);
+    if (oversizedImageError) {
+      return res.status(413).json({ message: oversizedImageError });
+    }
+
     const examQuestion = await ExamQuestion.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -217,7 +415,7 @@ router.put('/exam/:id', async (req, res) => {
 });
 
 // Bulk delete exam questions belonging to a test (keeps the Test itself)
-router.delete('/exam/delete/bulk', async (req, res) => {
+router.delete('/exam/delete/bulk', isAdmin, async (req, res) => {
   try {
     const { testId, testName } = req.query;
     if (!testId && !testName) {
@@ -233,7 +431,7 @@ router.delete('/exam/delete/bulk', async (req, res) => {
 });
 
 // Delete a single exam question
-router.delete('/exam/:id', async (req, res) => {
+router.delete('/exam/:id', isAdmin, async (req, res) => {
   try {
     const examQuestion = await ExamQuestion.findByIdAndDelete(req.params.id);
     if (!examQuestion) {
@@ -245,20 +443,131 @@ router.delete('/exam/:id', async (req, res) => {
   }
 });
 
-router.post('/upload', async (req, res) => {
+// Get all daily questions (optionally filtered by date, for daily-questions admin list)
+router.get('/daily', isAdmin, async (req, res) => {
+  try {
+    const { date } = req.query;
+    const query = date ? { date } : {};
+    const questions = await DailyQuestion.find(query).sort({ date: -1, createdAt: -1 });
+    res.json(questions);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error retrieving daily questions', error: error.message });
+  }
+});
+
+// Create/save a daily question (for daily-questions extractor destination)
+router.post('/daily', isAdmin, async (req, res) => {
+  try {
+    const { date } = req.body;
+    if (!date) {
+      return res.status(400).json({ message: 'date is required' });
+    }
+
+    const oversizedImageError = findOversizedImage(req.body);
+    if (oversizedImageError) {
+      return res.status(413).json({ message: oversizedImageError });
+    }
+
+    const dailyQuestion = new DailyQuestion(req.body);
+    await dailyQuestion.save();
+
+    res.status(201).json(dailyQuestion);
+  } catch (error) {
+    console.error("🔥 DAILY QUESTION ERROR:", error);
+    res.status(500).json({
+      message: 'Server error saving daily question',
+      error: error.message
+    });
+  }
+});
+
+// Get count of daily questions for a given date
+router.get('/daily/count', isAdmin, async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date) {
+      return res.status(400).json({ message: 'date is required' });
+    }
+    const count = await DailyQuestion.countDocuments({ date });
+    res.json({ count });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error getting daily question count', error: error.message });
+  }
+});
+
+// Update a single daily question (for daily question fixer)
+router.put('/daily/:id', isAdmin, async (req, res) => {
+  try {
+    const oversizedImageError = findOversizedImage(req.body);
+    if (oversizedImageError) {
+      return res.status(413).json({ message: oversizedImageError });
+    }
+
+    const dailyQuestion = await DailyQuestion.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+    if (!dailyQuestion) {
+      return res.status(404).json({ message: 'Daily question not found' });
+    }
+    res.json(dailyQuestion);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Bulk delete daily questions belonging to a date
+router.delete('/daily/delete/bulk', isAdmin, async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date) {
+      return res.status(400).json({ message: 'date is required' });
+    }
+    const result = await DailyQuestion.deleteMany({ date });
+    res.json({ message: `Successfully deleted ${result.deletedCount} questions`, deletedCount: result.deletedCount });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete a single daily question
+router.delete('/daily/:id', isAdmin, async (req, res) => {
+  try {
+    const dailyQuestion = await DailyQuestion.findByIdAndDelete(req.params.id);
+    if (!dailyQuestion) {
+      return res.status(404).json({ message: 'Daily question not found' });
+    }
+    res.json({ message: 'Daily question deleted' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.post('/upload', isAdmin, async (req, res) => {
   try {
     const { image } = req.body;
     if (!image) {
       return res.status(400).json({ message: 'No image provided' });
     }
+
+    if (base64ByteLength(image) > MAX_IMAGE_BYTES) {
+      return res.status(413).json({ message: 'Image is too large. Maximum allowed size is 150KB.' });
+    }
+
     res.json({ imageUrl: image });
   } catch (error) {
     res.status(500).json({ message: 'Upload error', error: error.message });
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', isAdmin, async (req, res) => {
   try {
+    const oversizedImageError = findOversizedImage(req.body);
+    if (oversizedImageError) {
+      return res.status(413).json({ message: oversizedImageError });
+    }
+
     const question = await Question.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -273,7 +582,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 // Bulk delete questions by topicId or subtopicId
-router.delete('/delete/bulk', async (req, res) => {
+router.delete('/delete/bulk', isAdmin, async (req, res) => {
   try {
     const { topicId, subtopicId } = req.query;
     let query = {};
@@ -295,7 +604,7 @@ router.delete('/delete/bulk', async (req, res) => {
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', isAdmin, async (req, res) => {
   try {
     const question = await Question.findByIdAndDelete(req.params.id);
     if (!question) {
@@ -307,7 +616,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-router.get('/stats/count', async (req, res) => {
+router.get('/stats/count', isAdmin, async (req, res) => {
   try {
     const { unitId, topicId, subtopicId } = req.query;
     let query = {};
@@ -322,7 +631,7 @@ router.get('/stats/count', async (req, res) => {
   }
 });
 
-router.get('/by-subtopic/:subtopicId', async (req, res) => {
+router.get('/by-subtopic/:subtopicId', isAdmin, async (req, res) => {
   try {
     const questions = await Question.find({ subtopicId: req.params.subtopicId });
     res.json(questions);
@@ -333,7 +642,19 @@ router.get('/by-subtopic/:subtopicId', async (req, res) => {
 
 router.get('/curriculum', async (req, res) => {
   try {
-    const units = await Unit.find().sort({ order: 1 });
+    const { examId } = req.query;
+    let unitQuery = examId ? { examId } : {};
+    if (!examId) {
+      // No explicit exam requested (as admin tools always pass none today) — if the
+      // caller is a logged-in student, scope the curriculum to their enrolled exam(s)
+      // so they only ever see units for exams they're actually enrolled in. A student
+      // enrolled in nothing yet must see nothing, not every exam's units.
+      const studentExamIds = await getStudentExamIds(req);
+      if (studentExamIds !== null) {
+        unitQuery = { examId: { $in: studentExamIds } };
+      }
+    }
+    const units = await Unit.find(unitQuery).sort({ order: 1 });
     const topics = await Topic.find().sort({ order: 1 });
     const subtopics = await Subtopic.find().sort({ order: 1 });
     const hierarchy = [];
@@ -341,6 +662,7 @@ router.get('/curriculum', async (req, res) => {
     for (const unit of units) {
       const unitData = {
         _id: unit._id.toString(),
+        examId: unit.examId.toString(),
         name: unit.name,
         topics: []
       };
@@ -372,7 +694,7 @@ router.get('/curriculum', async (req, res) => {
   }
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id', isAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: 'Invalid question id' });
@@ -389,13 +711,20 @@ router.get('/:id', async (req, res) => {
 });
 
 // Create a Unit
-router.post('/units', async (req, res) => {
+router.post('/units', isAdmin, async (req, res) => {
   try {
-    const { name, order } = req.body;
+    const { name, order, examId } = req.body;
     if (!name) {
       return res.status(400).json({ message: 'Unit name is required' });
     }
-    const unit = new Unit({ name, order: order || 0 });
+    if (!examId) {
+      return res.status(400).json({ message: 'examId is required' });
+    }
+    const exam = await Exam.findById(examId);
+    if (!exam) {
+      return res.status(400).json({ message: 'Exam not found' });
+    }
+    const unit = new Unit({ name, order: order || 0, examId });
     await unit.save();
     res.status(201).json(unit);
   } catch (error) {
@@ -404,12 +733,14 @@ router.post('/units', async (req, res) => {
 });
 
 // Update a Unit
-router.put('/units/:id', async (req, res) => {
+router.put('/units/:id', isAdmin, async (req, res) => {
   try {
-    const { name, order } = req.body;
+    const { name, order, examId } = req.body;
+    const update = { name, order };
+    if (examId !== undefined) update.examId = examId;
     const unit = await Unit.findByIdAndUpdate(
       req.params.id,
-      { name, order },
+      update,
       { new: true, runValidators: true }
     );
     if (!unit) {
@@ -422,7 +753,7 @@ router.put('/units/:id', async (req, res) => {
 });
 
 // Delete a Unit (Cascade deletion of Topics, Subtopics, and Questions)
-router.delete('/units/:id', async (req, res) => {
+router.delete('/units/:id', isAdmin, async (req, res) => {
   try {
     const unitId = req.params.id;
     const unit = await Unit.findById(unitId);
@@ -463,7 +794,7 @@ router.delete('/units/:id', async (req, res) => {
 });
 
 // Create a Topic
-router.post('/topics', async (req, res) => {
+router.post('/topics', isAdmin, async (req, res) => {
   try {
     const { name, unitId, order } = req.body;
     if (!name || !unitId) {
@@ -478,7 +809,7 @@ router.post('/topics', async (req, res) => {
 });
 
 // Update a Topic
-router.put('/topics/:id', async (req, res) => {
+router.put('/topics/:id', isAdmin, async (req, res) => {
   try {
     const { name, unitId, order } = req.body;
     const topic = await Topic.findByIdAndUpdate(
@@ -496,7 +827,7 @@ router.put('/topics/:id', async (req, res) => {
 });
 
 // Delete a Topic (Cascade deletion of Subtopics and Questions)
-router.delete('/topics/:id', async (req, res) => {
+router.delete('/topics/:id', isAdmin, async (req, res) => {
   try {
     const topicId = req.params.id;
     const topic = await Topic.findById(topicId);
@@ -529,7 +860,7 @@ router.delete('/topics/:id', async (req, res) => {
 });
 
 // Create a Subtopic
-router.post('/subtopics', async (req, res) => {
+router.post('/subtopics', isAdmin, async (req, res) => {
   try {
     const { name, topicId, order } = req.body;
     if (!name || !topicId) {
@@ -544,7 +875,7 @@ router.post('/subtopics', async (req, res) => {
 });
 
 // Update a Subtopic
-router.put('/subtopics/:id', async (req, res) => {
+router.put('/subtopics/:id', isAdmin, async (req, res) => {
   try {
     const { name, topicId, order } = req.body;
     const subtopic = await Subtopic.findByIdAndUpdate(
@@ -562,7 +893,7 @@ router.put('/subtopics/:id', async (req, res) => {
 });
 
 // Delete a Subtopic (Cascade deletion of Questions)
-router.delete('/subtopics/:id', async (req, res) => {
+router.delete('/subtopics/:id', isAdmin, async (req, res) => {
   try {
     const subtopicId = req.params.id;
     const subtopic = await Subtopic.findById(subtopicId);
@@ -583,13 +914,26 @@ router.delete('/subtopics/:id', async (req, res) => {
 });
 
 // Seed curriculum data
-router.post('/curriculum/seed', async (req, res) => {
+router.post('/curriculum/seed', isAdmin, async (req, res) => {
   try {
-    await Unit.deleteMany({});
-    await Topic.deleteMany({});
-    await Subtopic.deleteMany({});
+    const { examId } = req.body;
+    if (!examId) {
+      return res.status(400).json({ message: 'examId is required' });
+    }
+    const exam = await Exam.findById(examId);
+    if (!exam) {
+      return res.status(400).json({ message: 'Exam not found' });
+    }
 
-    const unit1 = await Unit.create({ name: "Unit 1: Building Materials & Construction Practices", order: 1 });
+    const existingUnits = await Unit.find({ examId });
+    const existingUnitIds = existingUnits.map((u) => u._id);
+    const existingTopics = await Topic.find({ unitId: { $in: existingUnitIds } });
+    const existingTopicIds = existingTopics.map((t) => t._id);
+    await Subtopic.deleteMany({ topicId: { $in: existingTopicIds } });
+    await Topic.deleteMany({ unitId: { $in: existingUnitIds } });
+    await Unit.deleteMany({ examId });
+
+    const unit1 = await Unit.create({ examId, name: "Unit 1: Building Materials & Construction Practices", order: 1 });
     const topic1_1 = await Topic.create({ name: "Building Materials", unitId: unit1._id, order: 1 });
     const topic1_2 = await Topic.create({ name: "Construction Practices", unitId: unit1._id, order: 2 });
     await Subtopic.create([
@@ -612,7 +956,7 @@ router.post('/curriculum/seed', async (req, res) => {
     ]);
 
     // Unit 2
-    const unit2 = await Unit.create({ name: "Unit 2: Engineering Survey", order: 2 });
+    const unit2 = await Unit.create({ examId, name: "Unit 2: Engineering Survey", order: 2 });
     const topic2_1 = await Topic.create({ name: "Surveying Fundamentals", unitId: unit2._id, order: 1 });
     const topic2_2 = await Topic.create({ name: "Advanced Surveying", unitId: unit2._id, order: 2 });
     await Subtopic.create([
@@ -633,7 +977,7 @@ router.post('/curriculum/seed', async (req, res) => {
     ]);
 
     // Unit 3
-    const unit3 = await Unit.create({ name: "Unit 3: Engineering Mechanics & Strength of Materials", order: 3 });
+    const unit3 = await Unit.create({ examId, name: "Unit 3: Engineering Mechanics & Strength of Materials", order: 3 });
     const topic3_1 = await Topic.create({ name: "Engineering Mechanics", unitId: unit3._id, order: 1 });
     const topic3_2 = await Topic.create({ name: "Strength of Materials", unitId: unit3._id, order: 2 });
     await Subtopic.create([

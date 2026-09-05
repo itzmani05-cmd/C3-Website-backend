@@ -26,6 +26,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: 'active',
     enum: ['active', 'inactive', 'blocked']
+  },
+  examIds: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Exam' }],
+    default: []
   }
 }, {
   timestamps: true

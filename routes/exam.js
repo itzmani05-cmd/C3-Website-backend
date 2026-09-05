@@ -24,6 +24,10 @@ const getRemainingTimeSec = (startedAt) => {
   return Math.max(0, EXAM_DURATION_SEC - elapsedSec);
 };
 
+// Multi-select/numerical questions aren't answerable through the current single-choice exam UI yet;
+// this keeps grading from crashing on their non-string correct_answer instead of matching them.
+const correctAnswerAsString = (value) => (typeof value === 'string' ? value : '');
+
 const isAdmin = (req, res, next) => {
   if (req.user && req.user.role && req.user.role.toLowerCase() === 'admin') {
     next();
@@ -50,7 +54,7 @@ const calculateAndSaveResult = async (studentExam) => {
       const studentAns = studentExam.answers.get(qId);
       if (!studentAns) {
         unansweredCount++;
-      } else if (studentAns.trim().toLowerCase() === q.correct_answer?.trim().toLowerCase()) {
+      } else if (studentAns.trim().toLowerCase() === correctAnswerAsString(q.correct_answer).trim().toLowerCase()) {
         correctCount++;
       } else {
         wrongCount++;
@@ -81,7 +85,11 @@ const calculateAndSaveResult = async (studentExam) => {
 router.get('/list', verifyToken, async (req, res) => {
   try {
     const studentEmail = req.user.email;
-    const tests = await Test.find({ publishToStudent: true })
+    const student = await User.findOne({ email: studentEmail }).select('examIds');
+    const examIds = student?.examIds || [];
+
+    const testQuery = { publishToStudent: true, examId: { $in: examIds } };
+    const tests = await Test.find(testQuery)
       .select('_id name createdAt')
       .sort({ createdAt: 1 });
 
@@ -122,6 +130,12 @@ router.post('/start', verifyToken, async (req, res) => {
     }
     if (!testDoc.publishToStudent) {
       return res.status(403).json({ message: 'This test is not available to students' });
+    }
+
+    const student = await User.findOne({ email: studentEmail }).select('examIds');
+    const isEnrolled = (student?.examIds || []).some((id) => id.toString() === testDoc.examId.toString());
+    if (!isEnrolled) {
+      return res.status(403).json({ message: 'This test is not available for your enrolled exam' });
     }
 
     const testName = testDoc.name;

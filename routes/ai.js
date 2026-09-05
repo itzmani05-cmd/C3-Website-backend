@@ -1,6 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+const { verifyToken } = require('./auth');
+
+const isAdmin = (req, res, next) => {
+  if (req.user && req.user.role && req.user.role.toLowerCase() === 'admin') {
+    next();
+  } else {
+    res.status(403).json({ message: 'Access denied: Admin only' });
+  }
+};
+
+router.use(verifyToken, isAdmin);
 
 // Local smart extract - handles multiple formats including inline paragraph format
 function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestions = 25) {

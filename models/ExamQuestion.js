@@ -21,11 +21,16 @@ const examQuestionSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  answerType: {
+    type: String,
+    enum: ['single', 'multiple', 'numerical'],
+    default: 'single'
+  },
   options: {
-    a: { type: String, required: true },
-    b: { type: String, required: true },
-    c: { type: String, required: true },
-    d: { type: String, required: true }
+    a: { type: String, default: '' },
+    b: { type: String, default: '' },
+    c: { type: String, default: '' },
+    d: { type: String, default: '' }
   },
   optionImages: {
     a: { type: String, default: null },
@@ -34,8 +39,20 @@ const examQuestionSchema = new mongoose.Schema({
     d: { type: String, default: null }
   },
   correct_answer: {
-    type: String,
-    enum: ['a', 'b', 'c', 'd']
+    type: mongoose.Schema.Types.Mixed,
+    validate: {
+      validator: function (value) {
+        if (value === undefined || value === null) return true;
+        if (this.answerType === 'multiple') {
+          return Array.isArray(value) && value.every((v) => ['a', 'b', 'c', 'd'].includes(v));
+        }
+        if (this.answerType === 'numerical') {
+          return typeof value === 'string' || typeof value === 'number';
+        }
+        return ['a', 'b', 'c', 'd'].includes(value);
+      },
+      message: 'correct_answer does not match the question\'s answerType'
+    }
   },
   explanation: {
     type: String,

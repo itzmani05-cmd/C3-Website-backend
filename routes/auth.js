@@ -1,8 +1,10 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const router = express.Router();
 const User = require('../models/User');
+const Exam = require('../models/Exam');
 
 const loginAttempts = {};
 
@@ -119,11 +121,44 @@ const isAdmin = (req, res, next) => {
   }
 };
 
+// ─── GET /api/auth/me ──────────────────────────────────────────────────────────
+router.get('/me', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findOne({ email: req.user.email }).select('-password').populate('examIds', 'name');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error retrieving profile', error: error.message });
+  }
+});
+
+// Validates a raw examIds array from a request body: must be a valid ObjectId array,
+// and every id must reference an Exam that actually exists.
+const resolveExamIds = async (examIds) => {
+  if (examIds === undefined) return undefined;
+  if (!Array.isArray(examIds)) {
+    throw new Error('examIds must be an array');
+  }
+  const uniqueIds = [...new Set(examIds)];
+  const validIds = uniqueIds.filter((id) => mongoose.isValidObjectId(id));
+  if (validIds.length !== uniqueIds.length) {
+    throw new Error('examIds contains an invalid id');
+  }
+  const count = await Exam.countDocuments({ _id: { $in: validIds } });
+  if (count !== validIds.length) {
+    throw new Error('One or more exams could not be found');
+  }
+  return validIds;
+};
+
 // ─── GET /api/auth/admin/students ─────────────────────────────────────────────
 router.get('/admin/students', verifyToken, isAdmin, async (req, res) => {
   try {
     const students = await User.find({ role: { $in: ['Student', 'student'] } })
       .select('-password')
+      .populate('examIds', 'name')
       .sort({ name: 1, email: 1 });
     res.json(students);
   } catch (error) {
@@ -134,7 +169,7 @@ router.get('/admin/students', verifyToken, isAdmin, async (req, res) => {
 // ─── POST /api/auth/admin/students ────────────────────────────────────────────
 router.post('/admin/students', verifyToken, isAdmin, async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, examIds } = req.body;
     if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ message: 'Student name is required' });
     }
@@ -151,12 +186,20 @@ router.post('/admin/students', verifyToken, isAdmin, async (req, res) => {
       return res.status(400).json({ message: 'A user with this email already exists' });
     }
 
+    let resolvedExamIds;
+    try {
+      resolvedExamIds = await resolveExamIds(examIds);
+    } catch (validationError) {
+      return res.status(400).json({ message: validationError.message });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const student = new User({
       name: name.trim(),
       email: normalizedEmail,
       password: hashedPassword,
-      role: 'student'
+      role: 'student',
+      examIds: resolvedExamIds || []
     });
     await student.save();
 
@@ -170,7 +213,7 @@ router.post('/admin/students', verifyToken, isAdmin, async (req, res) => {
 // ─── PUT /api/auth/admin/students/:id ─────────────────────────────────────────
 router.put('/admin/students/:id', verifyToken, isAdmin, async (req, res) => {
   try {
-    const { name, email, status } = req.body;
+    const { name, email, status, examIds } = req.body;
     const update = {};
 
     if (name !== undefined) {
@@ -188,12 +231,19 @@ router.put('/admin/students/:id', verifyToken, isAdmin, async (req, res) => {
     if (status !== undefined) {
       update.status = status;
     }
+    if (examIds !== undefined) {
+      try {
+        update.examIds = await resolveExamIds(examIds);
+      } catch (validationError) {
+        return res.status(400).json({ message: validationError.message });
+      }
+    }
 
     const student = await User.findOneAndUpdate(
       { _id: req.params.id, role: { $in: ['Student', 'student'] } },
       update,
       { new: true, runValidators: true }
-    ).select('-password');
+    ).select('-password').populate('examIds', 'name');
 
     if (!student) {
       return res.status(404).json({ message: 'Student not found' });
