@@ -254,7 +254,7 @@ router.get('/:id/analytics', verifyToken, isAdmin, async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: 'Invalid challenge id' });
     }
-    const challenge = await DailyChallenge.findById(req.params.id).populate('questionIds');
+    const challenge = await DailyChallenge.findById(req.params.id);
     if (!challenge) {
       return res.status(404).json({ message: 'Daily Challenge not found' });
     }
@@ -282,35 +282,8 @@ router.get('/:id/analytics', verifyToken, isAdmin, async (req, res) => {
       totalAttempts: attempts.length,
       submittedAttempts: submittedAttempts.length,
       averagePercentage: Math.round(averagePercentage * 100) / 100,
-      averageAttempts: attemptedEmails.size ? Math.round((attempts.length / attemptedEmails.size) * 100) / 100 : 0,
-      highestScore: submittedAttempts.length ? Math.max(...submittedAttempts.map((a) => a.score || 0)) : 0
+      averageAttempts: attemptedEmails.size ? Math.round((attempts.length / attemptedEmails.size) * 100) / 100 : 0
     };
-
-    const perQuestion = (challenge.questionIds || []).map((q) => {
-      const qId = q._id.toString();
-      let correctCount = 0;
-      let incorrectCount = 0;
-      let unansweredCount = 0;
-      submittedAttempts.forEach((attempt) => {
-        const submittedValue = attempt.answers instanceof Map ? attempt.answers.get(qId) : attempt.answers?.[qId];
-        if (submittedValue === undefined || submittedValue === null || submittedValue === '') {
-          unansweredCount += 1;
-        } else if (isAnswerCorrect(q, submittedValue)) {
-          correctCount += 1;
-        } else {
-          incorrectCount += 1;
-        }
-      });
-      const total = correctCount + incorrectCount + unansweredCount;
-      return {
-        questionId: qId,
-        questionText: q.question,
-        correctCount,
-        incorrectCount,
-        unansweredCount,
-        accuracyPercent: total ? Math.round((correctCount / total) * 10000) / 100 : 0
-      };
-    });
 
     const byStudent = new Map();
     attempts.forEach((a) => {
@@ -340,7 +313,6 @@ router.get('/:id/analytics', verifyToken, isAdmin, async (req, res) => {
         status: challenge.status
       },
       participation,
-      perQuestion,
       perStudent
     });
   } catch (error) {
