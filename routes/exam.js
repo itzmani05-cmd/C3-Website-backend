@@ -26,9 +26,21 @@ const getRemainingTimeSec = (startedAt, durationMinutes) => {
   return Math.max(0, durationSec - elapsedSec);
 };
 
-// Multi-select/numerical questions aren't answerable through the current single-choice exam UI yet;
-// this keeps grading from crashing on their non-string correct_answer instead of matching them.
+// Multi-select questions aren't answerable through the current single-choice exam UI yet; this
+// keeps grading from crashing on their array correct_answer instead of matching them.
 const correctAnswerAsString = (value) => (typeof value === 'string' ? value : '');
+
+// Numerical-answer questions are graded by value, not exact text, so "7", "7.0" and "07" all
+// match a correct_answer of 7. Falls back to string equality when either side isn't a plain number
+// (e.g. a NAT question whose answer is itself non-numeric text).
+const isNumericalAnswerCorrect = (studentAns, correctAnswer) => {
+  const studentNum = parseFloat(studentAns);
+  const correctNum = parseFloat(correctAnswer);
+  if (!Number.isNaN(studentNum) && !Number.isNaN(correctNum)) {
+    return Math.abs(studentNum - correctNum) < 0.01;
+  }
+  return studentAns.trim().toLowerCase() === String(correctAnswer).trim().toLowerCase();
+};
 
 const isAdmin = (req, res, next) => {
   if (req.user && req.user.role && req.user.role.toLowerCase() === 'admin') {
@@ -67,7 +79,9 @@ const calculateAndSaveResult = async (studentExam) => {
         return;
       }
 
-      const isCorrect = studentAns.trim().toLowerCase() === correctAnswerAsString(q.correct_answer).trim().toLowerCase();
+      const isCorrect = q.answerType === 'numerical'
+        ? isNumericalAnswerCorrect(studentAns, q.correct_answer)
+        : studentAns.trim().toLowerCase() === correctAnswerAsString(q.correct_answer).trim().toLowerCase();
       if (isCorrect) {
         correctCount++;
         score += marks;
