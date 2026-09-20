@@ -33,6 +33,12 @@ const studentExamSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Sum of marks across all questions in the test (e.g. 100 for a GATE-pattern paper). Equals
+  // totalQuestions for plain, non-patterned tests where every question is worth 1 mark.
+  maxScore: {
+    type: Number,
+    default: 0
+  },
   totalQuestions: {
     type: Number,
     default: 0

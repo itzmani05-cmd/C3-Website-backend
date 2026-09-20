@@ -5,6 +5,7 @@ const ExamQuestion = require('../models/ExamQuestion');
 const Test = require('../models/Test');
 const User = require('../models/User');
 const { verifyToken } = require('./auth');
+const { buildNegativeFractionLookup, sortQuestionsByPattern, annotateNegativeMarks } = require('../utils/testPattern');
 
 const attachStudentNames = async (studentExams) => {
   const emails = [...new Set(studentExams.map((r) => r.studentEmail))];
@@ -16,12 +17,13 @@ const attachStudentNames = async (studentExams) => {
   });
 };
 
-const EXAM_DURATION_SEC = 180 * 60;
+const DEFAULT_EXAM_DURATION_MIN = 180;
 
-const getRemainingTimeSec = (startedAt) => {
+const getRemainingTimeSec = (startedAt, durationMinutes) => {
+  const durationSec = (durationMinutes || DEFAULT_EXAM_DURATION_MIN) * 60;
   const elapsedMs = Date.now() - new Date(startedAt).getTime();
   const elapsedSec = Math.floor(elapsedMs / 1000);
-  return Math.max(0, EXAM_DURATION_SEC - elapsedSec);
+  return Math.max(0, durationSec - elapsedSec);
 };
 
 // Multi-select/numerical questions aren't answerable through the current single-choice exam UI yet;
@@ -45,19 +47,37 @@ const calculateAndSaveResult = async (studentExam) => {
       ]
     });
 
+    const testDoc = studentExam.testId ? await Test.findById(studentExam.testId).select('pattern') : null;
+    const negativeFractionFor = buildNegativeFractionLookup(testDoc?.pattern);
+
     let correctCount = 0;
     let wrongCount = 0;
     let unansweredCount = 0;
+    let score = 0;
+    let maxScore = 0;
 
     questions.forEach((q) => {
+      const marks = typeof q.marks === 'number' && q.marks > 0 ? q.marks : 1;
+      maxScore += marks;
+
       const qId = q._id.toString();
       const studentAns = studentExam.answers.get(qId);
       if (!studentAns) {
         unansweredCount++;
-      } else if (studentAns.trim().toLowerCase() === correctAnswerAsString(q.correct_answer).trim().toLowerCase()) {
+        return;
+      }
+
+      const isCorrect = studentAns.trim().toLowerCase() === correctAnswerAsString(q.correct_answer).trim().toLowerCase();
+      if (isCorrect) {
         correctCount++;
+        score += marks;
       } else {
         wrongCount++;
+        // GATE-style negative marking only ever applies to single-choice (MCQ) questions —
+        // multi-select and numerical-answer questions are never penalized for a wrong attempt.
+        if (q.answerType === 'single') {
+          score -= marks * negativeFractionFor(q);
+        }
       }
     });
 
@@ -65,13 +85,14 @@ const calculateAndSaveResult = async (studentExam) => {
     studentExam.correctCount = correctCount;
     studentExam.wrongCount = wrongCount;
     studentExam.unansweredCount = unansweredCount;
-    studentExam.score = correctCount;
-    studentExam.percentage = questions.length > 0 ? parseFloat(((correctCount / questions.length) * 100).toFixed(2)) : 0;
+    studentExam.score = parseFloat(score.toFixed(2));
+    studentExam.maxScore = maxScore;
+    studentExam.percentage = maxScore > 0 ? parseFloat(((score / maxScore) * 100).toFixed(2)) : 0;
     studentExam.submitted = true;
     if (!studentExam.submittedAt) {
       studentExam.submittedAt = new Date();
     }
-    
+
     await studentExam.save();
     return studentExam;
   } catch (error) {
@@ -101,6 +122,7 @@ router.get('/list', verifyToken, async (req, res) => {
         createdAt: test.createdAt,
         submitted: attempt ? attempt.submitted : false,
         score: attempt && attempt.submitted ? attempt.score : null,
+        maxScore: attempt && attempt.submitted ? attempt.maxScore : null,
         percentage: attempt && attempt.submitted ? attempt.percentage : null,
         totalQuestions: attempt && attempt.submitted ? attempt.totalQuestions : null,
       };
@@ -155,7 +177,7 @@ router.post('/start', verifyToken, async (req, res) => {
       await studentExam.save();
     }
 
-    let remainingTime = getRemainingTimeSec(studentExam.startedAt);
+    let remainingTime = getRemainingTimeSec(studentExam.startedAt, testDoc.durationMinutes);
 
     if (remainingTime <= 0 && !studentExam.submitted) {
       await calculateAndSaveResult(studentExam);
@@ -175,6 +197,7 @@ router.post('/start', verifyToken, async (req, res) => {
         $or: [{ testId: testDoc._id }, { testName: studentExam.testName }]
       }).select('-correct_answer -explanation -explanationImage');
     }
+    questions = annotateNegativeMarks(sortQuestionsByPattern(questions, testDoc.pattern), testDoc.pattern);
 
     res.json({
       testId: testDoc._id,
@@ -185,6 +208,7 @@ router.post('/start', verifyToken, async (req, res) => {
       submitted: studentExam.submitted,
       submittedAt: studentExam.submittedAt,
       score: studentExam.score,
+      maxScore: studentExam.maxScore,
       totalQuestions: studentExam.totalQuestions,
       correctCount: studentExam.correctCount,
       wrongCount: studentExam.wrongCount,
@@ -222,7 +246,8 @@ router.post('/sync', verifyToken, async (req, res) => {
       });
     }
 
-    const remainingTime = getRemainingTimeSec(studentExam.startedAt);
+    const testDoc = await Test.findById(testId).select('durationMinutes');
+    const remainingTime = getRemainingTimeSec(studentExam.startedAt, testDoc?.durationMinutes);
     if (remainingTime <= 0) {
       await calculateAndSaveResult(studentExam);
       return res.status(400).json({
@@ -280,14 +305,17 @@ router.post('/submit', verifyToken, async (req, res) => {
     studentExam.submittedAt = new Date();
     await calculateAndSaveResult(studentExam);
 
-    const questions = await ExamQuestion.find({
-      $or: [{ testId: studentExam.testId }, { testName: studentExam.testName }]
-    });
+    const [questionsRaw, testDoc] = await Promise.all([
+      ExamQuestion.find({ $or: [{ testId: studentExam.testId }, { testName: studentExam.testName }] }),
+      studentExam.testId ? Test.findById(studentExam.testId).select('pattern') : null
+    ]);
+    const questions = annotateNegativeMarks(sortQuestionsByPattern(questionsRaw, testDoc?.pattern), testDoc?.pattern);
 
     res.json({
       message: 'Exam submitted successfully',
       submittedAt: studentExam.submittedAt,
       score: studentExam.score,
+      maxScore: studentExam.maxScore,
       totalQuestions: studentExam.totalQuestions,
       correctCount: studentExam.correctCount,
       wrongCount: studentExam.wrongCount,
@@ -358,12 +386,11 @@ router.get('/admin/results/:id', verifyToken, isAdmin, async (req, res) => {
     if (!studentExam) {
       return res.status(404).json({ message: 'Result not found' });
     }
-    const questions = await ExamQuestion.find({
-      $or: [
-        { testId: studentExam.testId },
-        { testName: studentExam.testName }
-      ]
-    });
+    const [questionsRaw, testDoc] = await Promise.all([
+      ExamQuestion.find({ $or: [{ testId: studentExam.testId }, { testName: studentExam.testName }] }),
+      studentExam.testId ? Test.findById(studentExam.testId).select('pattern') : null
+    ]);
+    const questions = sortQuestionsByPattern(questionsRaw, testDoc?.pattern);
     const [studentExamWithName] = await attachStudentNames([studentExam]);
     res.json({
       studentExam: studentExamWithName,

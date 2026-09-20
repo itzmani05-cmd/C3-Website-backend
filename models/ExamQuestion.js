@@ -9,6 +9,21 @@ const examQuestionSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  // Which part/section of the test's pattern this question belongs to (e.g. "Part A - General
+  // Aptitude" / "2 Mark Questions"). Empty for plain (non-patterned) tests.
+  part: {
+    type: String,
+    default: ''
+  },
+  section: {
+    type: String,
+    default: ''
+  },
+  marks: {
+    type: Number,
+    default: 1,
+    min: 0
+  },
   type: {
     type: String,
     default: 'Theory-based MCQ'

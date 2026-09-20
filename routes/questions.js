@@ -14,6 +14,7 @@ const DailyChallenge = require('../models/DailyChallenge');
 const DailyChallengeAttempt = require('../models/DailyChallengeAttempt');
 const User = require('../models/User');
 const { verifyToken } = require('./auth');
+const { sortQuestionsByPattern } = require('../utils/testPattern');
 
 // This entire router manages authored content (curriculum, questions, tests, exams) —
 // every route requires a logged-in user; individual routes further restrict to admins below.
@@ -260,7 +261,7 @@ router.get('/tests', isAdmin, async (req, res) => {
 // Create a Test
 router.post('/tests', isAdmin, async (req, res) => {
   try {
-    const { name, publishToStudent, examId } = req.body;
+    const { name, publishToStudent, examId, pattern, durationMinutes } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ message: 'Test name is required' });
     }
@@ -277,7 +278,13 @@ router.post('/tests', isAdmin, async (req, res) => {
       return res.status(400).json({ message: 'A test with this name already exists for this exam' });
     }
 
-    const test = new Test({ name: name.trim(), publishToStudent: !!publishToStudent, examId });
+    const test = new Test({
+      name: name.trim(),
+      publishToStudent: !!publishToStudent,
+      examId,
+      pattern: Array.isArray(pattern) && pattern.length > 0 ? pattern : undefined,
+      durationMinutes: durationMinutes || undefined
+    });
     await test.save();
     res.status(201).json(test);
   } catch (error) {
@@ -285,10 +292,60 @@ router.post('/tests', isAdmin, async (req, res) => {
   }
 });
 
+// When a part/section's `key` survives between the old and new pattern but its `name` changed,
+// retag every ExamQuestion already saved under the old name — otherwise a rename would silently
+// orphan those questions from negative marking, progress counts, and ordering (see utils/testPattern.js).
+//
+// Section-level renames must run BEFORE the part-level fallback below: both match on the OLD part
+// name, so if the coarse part rename ran first it would already flip every document's `part` to the
+// new name, leaving nothing for the section-specific update (which still filters on the old name) to
+// match — silently dropping the section rename.
+const cascadeRenamePatternSections = async (test, oldPattern, newPattern) => {
+  if (!Array.isArray(oldPattern) || !Array.isArray(newPattern)) return;
+
+  const oldPartByKey = new Map(oldPattern.map((p) => [p.key, p]));
+  const baseFilter = { $or: [{ testId: test._id }, { testName: test.name }] };
+
+  for (const newPart of newPattern) {
+    const oldPart = newPart.key && oldPartByKey.get(newPart.key);
+    if (!oldPart) continue;
+
+    const oldSectionByKey = new Map((oldPart.sections || []).map((s) => [s.key, s]));
+    const handledOldSectionNames = [];
+
+    for (const newSection of newPart.sections || []) {
+      const oldSection = newSection.key && oldSectionByKey.get(newSection.key);
+      if (!oldSection) continue;
+      handledOldSectionNames.push(oldSection.name);
+      if (oldSection.name !== newSection.name || oldPart.name !== newPart.name) {
+        await ExamQuestion.updateMany(
+          { ...baseFilter, part: oldPart.name, section: oldSection.name },
+          { $set: { part: newPart.name, section: newSection.name } }
+        );
+      }
+    }
+
+    // Catches anything left under the old part name that no section-specific update above
+    // touched (legacy questions with no section, or a section since removed from the pattern) —
+    // still worth carrying the part rename forward for.
+    if (oldPart.name !== newPart.name) {
+      await ExamQuestion.updateMany(
+        { ...baseFilter, part: oldPart.name, section: { $nin: handledOldSectionNames } },
+        { $set: { part: newPart.name } }
+      );
+    }
+  }
+};
+
 // Update a Test
 router.put('/tests/:id', isAdmin, async (req, res) => {
   try {
-    const { name, publishToStudent, examId } = req.body;
+    const { name, publishToStudent, examId, pattern, durationMinutes } = req.body;
+    const existingTest = await Test.findById(req.params.id).select('name pattern');
+    if (!existingTest) {
+      return res.status(404).json({ message: 'Test not found' });
+    }
+
     const update = {};
     if (name !== undefined) {
       if (!name.trim()) {
@@ -302,15 +359,27 @@ router.put('/tests/:id', isAdmin, async (req, res) => {
     if (examId !== undefined) {
       update.examId = examId;
     }
+    if (durationMinutes !== undefined) {
+      update.durationMinutes = durationMinutes || 180;
+    }
+    const clearsPattern = pattern !== undefined && (!Array.isArray(pattern) || pattern.length === 0);
+    if (pattern !== undefined && !clearsPattern) {
+      update.pattern = pattern;
+    }
 
     const test = await Test.findByIdAndUpdate(
       req.params.id,
-      update,
+      clearsPattern ? { ...update, $unset: { pattern: 1 } } : update,
       { new: true, runValidators: true }
     ).populate('examId', 'name');
     if (!test) {
       return res.status(404).json({ message: 'Test not found' });
     }
+
+    if (pattern !== undefined && !clearsPattern) {
+      await cascadeRenamePatternSections(existingTest, existingTest.pattern, pattern);
+    }
+
     res.json(test);
   } catch (error) {
     res.status(500).json({ message: 'Server error updating test', error: error.message });
@@ -339,7 +408,7 @@ router.delete('/tests/:id', isAdmin, async (req, res) => {
 // Create/save an exam question (for test extractor destination)
 router.post('/exam', isAdmin, async (req, res) => {
   try {
-    const { testName } = req.body;
+    const { testName, testId, part, section } = req.body;
     if (!testName) {
       return res.status(400).json({ message: 'testName is required' });
     }
@@ -347,6 +416,21 @@ router.post('/exam', isAdmin, async (req, res) => {
     const oversizedImageError = findOversizedImage(req.body);
     if (oversizedImageError) {
       return res.status(413).json({ message: oversizedImageError });
+    }
+
+    // Enforce each pattern section's question cap (e.g. GATE's "5 questions" / "30 questions")
+    // server-side too, so it can't be exceeded by a stale extractor tab or a direct API call.
+    if (part && section) {
+      const test = testId ? await Test.findById(testId).select('pattern') : await Test.findOne({ name: testName }).select('pattern');
+      const patternSection = test?.pattern?.find((p) => p.name === part)?.sections.find((s) => s.name === section);
+      if (patternSection) {
+        const existingCount = await ExamQuestion.countDocuments({ testName, part, section });
+        if (existingCount >= patternSection.numQuestions) {
+          return res.status(400).json({
+            message: `"${section}" in "${part}" already has its full ${patternSection.numQuestions} questions. Remove one first or pick a different section.`
+          });
+        }
+      }
     }
 
     const examQuestion = new ExamQuestion(req.body);
@@ -371,24 +455,47 @@ router.get('/exam', isAdmin, async (req, res) => {
     }
 
     const query = testId ? { testId } : { testName };
-    const questions = await ExamQuestion.find(query).sort({ createdAt: 1 });
-    res.json(questions);
+    const [questions, test] = await Promise.all([
+      ExamQuestion.find(query).sort({ createdAt: 1 }),
+      testId ? Test.findById(testId).select('pattern') : Test.findOne({ name: testName }).select('pattern')
+    ]);
+    res.json(sortQuestionsByPattern(questions, test?.pattern));
   } catch (error) {
     res.status(500).json({ message: 'Server error retrieving exam questions', error: error.message });
   }
 });
 
-// Get count of questions in a test
+// Get count of questions in a test (optionally scoped to one part/section of its pattern)
 router.get('/exam/count', isAdmin, async (req, res) => {
+  try {
+    const { testName, part, section } = req.query;
+    if (!testName) {
+      return res.status(400).json({ message: 'testName is required' });
+    }
+    const query = { testName };
+    if (part) query.part = part;
+    if (section) query.section = section;
+    const count = await ExamQuestion.countDocuments(query);
+    res.json({ count });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error getting question count', error: error.message });
+  }
+});
+
+// Get per-part/section question counts for a test (drives the extractor's per-section progress)
+router.get('/exam/section-counts', isAdmin, async (req, res) => {
   try {
     const { testName } = req.query;
     if (!testName) {
       return res.status(400).json({ message: 'testName is required' });
     }
-    const count = await ExamQuestion.countDocuments({ testName });
-    res.json({ count });
+    const rows = await ExamQuestion.aggregate([
+      { $match: { testName } },
+      { $group: { _id: { part: '$part', section: '$section' }, count: { $sum: 1 } } }
+    ]);
+    res.json(rows.map((row) => ({ part: row._id.part || '', section: row._id.section || '', count: row.count })));
   } catch (error) {
-    res.status(500).json({ message: 'Server error getting question count', error: error.message });
+    res.status(500).json({ message: 'Server error getting section counts', error: error.message });
   }
 });
 
