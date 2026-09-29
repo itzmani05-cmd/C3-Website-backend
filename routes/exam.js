@@ -26,13 +26,25 @@ const getRemainingTimeSec = (startedAt, durationMinutes) => {
   return Math.max(0, durationSec - elapsedSec);
 };
 
-// Multi-select questions aren't answerable through the current single-choice exam UI yet; this
-// keeps grading from crashing on their array correct_answer instead of matching them.
 const correctAnswerAsString = (value) => (typeof value === 'string' ? value : '');
 
-// Numerical-answer questions are graded by value, not exact text, so "7", "7.0" and "07" all
-// match a correct_answer of 7. Falls back to string equality when either side isn't a plain number
-// (e.g. a NAT question whose answer is itself non-numeric text).
+const toOptionKeys = (value) => {
+  const raw = Array.isArray(value) ? value : String(value ?? '').split(',');
+  return [...new Set(raw.map((v) => String(v).trim().toLowerCase()).filter(Boolean))].sort();
+};
+
+const isMultipleAnswerCorrect = (studentAns, correctAnswer) => {
+  const student = toOptionKeys(studentAns);
+  const correct = toOptionKeys(correctAnswer);
+  return correct.length > 0 && student.length === correct.length && student.every((k, i) => k === correct[i]);
+};
+
+const isAnswerCorrect = (q, studentAns) => {
+  if (q.answerType === 'numerical') return isNumericalAnswerCorrect(studentAns, q.correct_answer);
+  if (q.answerType === 'multiple') return isMultipleAnswerCorrect(studentAns, q.correct_answer);
+  return studentAns.trim().toLowerCase() === correctAnswerAsString(q.correct_answer).trim().toLowerCase();
+};
+
 const isNumericalAnswerCorrect = (studentAns, correctAnswer) => {
   const studentNum = parseFloat(studentAns);
   const correctNum = parseFloat(correctAnswer);
@@ -79,16 +91,12 @@ const calculateAndSaveResult = async (studentExam) => {
         return;
       }
 
-      const isCorrect = q.answerType === 'numerical'
-        ? isNumericalAnswerCorrect(studentAns, q.correct_answer)
-        : studentAns.trim().toLowerCase() === correctAnswerAsString(q.correct_answer).trim().toLowerCase();
+      const isCorrect = isAnswerCorrect(q, studentAns);
       if (isCorrect) {
         correctCount++;
         score += marks;
       } else {
         wrongCount++;
-        // GATE-style negative marking only ever applies to single-choice (MCQ) questions —
-        // multi-select and numerical-answer questions are never penalized for a wrong attempt.
         if (q.answerType === 'single') {
           score -= marks * negativeFractionFor(q);
         }
@@ -115,8 +123,6 @@ const calculateAndSaveResult = async (studentExam) => {
   }
 };
 
-// ─── GET /api/exam/list ───────────────────────────────────────────────────────
-// Returns only tests where publishToStudent === true
 router.get('/list', verifyToken, async (req, res) => {
   try {
     const studentEmail = req.user.email;
@@ -125,22 +131,50 @@ router.get('/list', verifyToken, async (req, res) => {
 
     const testQuery = { publishToStudent: true, examId: { $in: examIds } };
     const tests = await Test.find(testQuery)
-      .select('_id name createdAt')
+      .select('_id name createdAt durationMinutes pattern')
       .sort({ createdAt: 1 });
 
-    const testsWithStatus = await Promise.all(tests.map(async (test) => {
-      const attempt = await StudentExam.findOne({ studentEmail, testId: test._id });
+    const [attempts, questionTotals] = await Promise.all([
+      StudentExam.find({ studentEmail, testId: { $in: tests.map((t) => t._id) } })
+        .select('testId submitted score maxScore percentage totalQuestions')
+        .lean(),
+      ExamQuestion.aggregate([
+        { $match: { $or: [{ testId: { $in: tests.map((t) => t._id) } }, { testName: { $in: tests.map((t) => t.name) } }] } },
+        {
+          $group: {
+            _id: { $ifNull: ['$testId', '$testName'] },
+            count: { $sum: 1 },
+            marks: { $sum: { $cond: [{ $gt: ['$marks', 0] }, '$marks', 1] } }
+          }
+        }
+      ])
+    ]);
+    const attemptByTestId = new Map(attempts.map((a) => [a.testId.toString(), a]));
+    const totalsByKey = new Map(questionTotals.map((row) => [String(row._id), row]));
+
+    const negativeFractionsOf = (pattern) =>
+      [...new Set((pattern || []).flatMap((part) => (part.sections || []).map((s) => s.negativeMarkFraction || 0)))].filter((f) => f > 0);
+
+    const testsWithStatus = tests.map((test) => {
+      const attempt = attemptByTestId.get(test._id.toString());
+      const byId = totalsByKey.get(test._id.toString());
+      const byName = totalsByKey.get(test.name);
       return {
         _id: test._id,
         name: test.name,
         createdAt: test.createdAt,
+        durationMinutes: test.durationMinutes || DEFAULT_EXAM_DURATION_MIN,
+        questionCount: (byId?.count || 0) + (byName?.count || 0),
+        totalMarks: (byId?.marks || 0) + (byName?.marks || 0),
+        negativeMarkFractions: negativeFractionsOf(test.pattern),
+        inProgress: !!attempt && !attempt.submitted,
         submitted: attempt ? attempt.submitted : false,
         score: attempt && attempt.submitted ? attempt.score : null,
         maxScore: attempt && attempt.submitted ? attempt.maxScore : null,
         percentage: attempt && attempt.submitted ? attempt.percentage : null,
         totalQuestions: attempt && attempt.submitted ? attempt.totalQuestions : null,
       };
-    }));
+    });
 
     res.json(testsWithStatus);
   } catch (error) {
@@ -148,8 +182,6 @@ router.get('/list', verifyToken, async (req, res) => {
   }
 });
 
-// ─── POST /api/exam/start ─────────────────────────────────────────────────────
-// Accepts { testId } — resolves test name, then fetches questions by testName
 router.post('/start', verifyToken, async (req, res) => {
   try {
     const studentEmail = req.user.email;
@@ -159,7 +191,6 @@ router.post('/start', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'testId is required' });
     }
 
-    // Resolve the Test document
     const testDoc = await Test.findById(testId);
     if (!testDoc) {
       return res.status(404).json({ message: 'Test not found' });
@@ -176,19 +207,23 @@ router.post('/start', verifyToken, async (req, res) => {
 
     const testName = testDoc.name;
 
-    // Find or create exam session
     let studentExam = await StudentExam.findOne({ studentEmail, testId });
 
     if (!studentExam) {
-      studentExam = new StudentExam({
-        studentEmail,
-        testId,
-        testName,
-        startedAt: new Date(),
-        answers: {},
-        submitted: false
-      });
-      await studentExam.save();
+      try {
+        studentExam = await new StudentExam({
+          studentEmail,
+          testId,
+          testName,
+          startedAt: new Date(),
+          answers: {},
+          submitted: false
+        }).save();
+      } catch (err) {
+        if (err?.code !== 11000) throw err;
+        studentExam = await StudentExam.findOne({ studentEmail, testId });
+        if (!studentExam) throw err;
+      }
     }
 
     let remainingTime = getRemainingTimeSec(studentExam.startedAt, testDoc.durationMinutes);
@@ -200,7 +235,6 @@ router.post('/start', verifyToken, async (req, res) => {
       await calculateAndSaveResult(studentExam);
     }
 
-    // Fetch questions by testId or testName (backward-compatible with existing data)
     let questions;
     if (studentExam.submitted) {
       questions = await ExamQuestion.find({
@@ -237,7 +271,39 @@ router.post('/start', verifyToken, async (req, res) => {
   }
 });
 
-// ─── POST /api/exam/sync ──────────────────────────────────────────────────────
+router.get('/status', verifyToken, async (req, res) => {
+  try {
+    const studentEmail = req.user.email;
+    const { testId } = req.query;
+    if (!testId) {
+      return res.status(400).json({ message: 'testId is required' });
+    }
+
+    const studentExam = await StudentExam.findOne({ studentEmail, testId });
+    if (!studentExam) {
+      return res.status(404).json({ message: 'Exam session not found' });
+    }
+
+    let remainingTime = 0;
+    if (!studentExam.submitted) {
+      const testDoc = await Test.findById(testId).select('durationMinutes');
+      remainingTime = getRemainingTimeSec(studentExam.startedAt, testDoc?.durationMinutes);
+      if (remainingTime <= 0) {
+        await calculateAndSaveResult(studentExam);
+      }
+    }
+
+    res.json({
+      submitted: studentExam.submitted,
+      remainingTime: studentExam.submitted ? 0 : remainingTime,
+      answers: studentExam.answers || {}
+    });
+  } catch (error) {
+    console.error('Error fetching exam status:', error);
+    res.status(500).json({ message: 'Server error fetching exam status', error: error.message });
+  }
+});
+
 router.post('/sync', verifyToken, async (req, res) => {
   try {
     const studentEmail = req.user.email;
@@ -296,7 +362,6 @@ router.post('/sync', verifyToken, async (req, res) => {
   }
 });
 
-// ─── POST /api/exam/submit ────────────────────────────────────────────────────
 router.post('/submit', verifyToken, async (req, res) => {
   try {
     const studentEmail = req.user.email;
@@ -344,9 +409,6 @@ router.post('/submit', verifyToken, async (req, res) => {
   }
 });
 
-// ─── GET /api/exam/admin/tests-summary ────────────────────────────────────────
-// One row per test that has at least one submitted attempt, with aggregate
-// stats for the admin Results landing page (master view).
 router.get('/admin/tests-summary', verifyToken, isAdmin, async (req, res) => {
   try {
     const summary = await StudentExam.aggregate([
@@ -374,8 +436,6 @@ router.get('/admin/tests-summary', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ─── GET /api/exam/admin/results ──────────────────────────────────────────────
-// Optionally filter to a single test via ?testId= or ?testName= (detail view).
 router.get('/admin/results', verifyToken, isAdmin, async (req, res) => {
   try {
     const { testId, testName } = req.query;
@@ -393,7 +453,6 @@ router.get('/admin/results', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ─── GET /api/exam/admin/results/:id ──────────────────────────────────────────
 router.get('/admin/results/:id', verifyToken, isAdmin, async (req, res) => {
   try {
     const studentExam = await StudentExam.findById(req.params.id);
@@ -415,7 +474,6 @@ router.get('/admin/results/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ─── DELETE /api/exam/admin/results/:id ───────────────────────────────────────
 router.delete('/admin/results/:id', verifyToken, isAdmin, async (req, res) => {
   try {
     const studentExam = await StudentExam.findByIdAndDelete(req.params.id);

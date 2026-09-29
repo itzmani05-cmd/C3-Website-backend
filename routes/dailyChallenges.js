@@ -20,7 +20,6 @@ const OPTION_KEYS = ['a', 'b', 'c', 'd'];
 
 const computeDateKey = (date) => new Date(date).toISOString().slice(0, 10);
 
-// ─── Publish-readiness validation ──────────────────────────────────────────
 const isQuestionPublishReady = (q) => {
   if (!q || !q.question || !q.question.trim()) return false;
   if (!q.explanation || !q.explanation.trim()) return false;
@@ -40,8 +39,6 @@ const isQuestionPublishReady = (q) => {
   return typeof q.correct_answer === 'string' && OPTION_KEYS.includes(q.correct_answer);
 };
 
-// The C3App mobile client's Daily Challenge UI renders single-choice, multiple-choice (checkbox),
-// and numerical (free-text) questions — mirrors regular publish-readiness exactly.
 const isSingleChoiceReady = (q) => isQuestionPublishReady(q);
 
 const getCorrectOptionIndexes = (q) => {
@@ -51,9 +48,6 @@ const getCorrectOptionIndexes = (q) => {
     .filter((idx) => idx >= 0);
 };
 
-// Builds the frozen snapshot the mobile client reads instead of resolving questionIds live, so a
-// later edit to a Question doesn't retroactively change a challenge students are already attempting.
-// Assumes every question has already passed isSingleChoiceReady.
 const buildQuestionSnapshot = (questions) =>
   questions.map((q, index) => {
     const answerType = q.answerType || 'single';
@@ -75,7 +69,6 @@ const buildQuestionSnapshot = (questions) =>
     };
   });
 
-// ─── Grading (single/multiple/numerical aware, mirrors Question.answerType) ─
 const isAnswerCorrect = (question, submitted) => {
   if (submitted === undefined || submitted === null || submitted === '') return false;
   const answerType = question.answerType || 'single';
@@ -126,11 +119,6 @@ const attachStudentNames = async (rows, emailKey = 'studentEmail') => {
   return rows.map((r) => ({ ...r, studentName: nameByEmail.get(r[emailKey]) || '' }));
 };
 
-// ════════════════════════════════════════════════════════════════════════
-// ADMIN ENDPOINTS
-// ════════════════════════════════════════════════════════════════════════
-
-// Dashboard: today's challenge, upcoming (scheduled/draft), recent (published/expired)
 router.get('/dashboard', verifyToken, isAdmin, async (req, res) => {
   try {
     const { examId } = req.query;
@@ -190,7 +178,6 @@ router.get('/dashboard', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// List all (optionally filtered by status and/or exam)
 router.get('/', verifyToken, isAdmin, async (req, res) => {
   try {
     const { status, examId } = req.query;
@@ -204,10 +191,6 @@ router.get('/', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════
-// STUDENT-FACING: currently active challenge, answers/explanations stripped
-// Registered before '/:id' so the literal path 'active' isn't swallowed by it.
-// ════════════════════════════════════════════════════════════════════════
 router.get('/active', verifyToken, async (req, res) => {
   try {
     const student = await User.findOne({ email: req.user.email }).select('examIds');
@@ -248,7 +231,6 @@ router.get('/active', verifyToken, async (req, res) => {
   }
 });
 
-// Analytics for one challenge
 router.get('/:id/analytics', verifyToken, isAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -260,12 +242,20 @@ router.get('/:id/analytics', verifyToken, isAdmin, async (req, res) => {
     }
 
     const attempts = await DailyChallengeAttempt.find({ challengeId: challenge._id });
-    const eligibleStudents = await User.countDocuments({
+    const eligibleUsers = await User.find({
       role: { $in: ['Student', 'student'] },
+      examIds: challenge.examId,
       $or: [{ status: 'active' }, { status: { $exists: false } }]
-    });
+    })
+      .select('email name')
+      .sort({ name: 1 });
+    const eligibleStudents = eligibleUsers.length;
 
     const attemptedEmails = new Set(attempts.map((a) => a.studentEmail));
+    const attemptedLower = new Set([...attemptedEmails].map((e) => (e || '').toLowerCase()));
+    const notAttemptedList = eligibleUsers
+      .filter((u) => !attemptedLower.has((u.email || '').toLowerCase()))
+      .map((u) => ({ studentEmail: u.email, studentName: u.name || '' }));
     const submittedAttempts = attempts.filter((a) => a.submitted);
     const submittedEmails = new Set(submittedAttempts.map((a) => a.studentEmail));
     const averagePercentage = submittedAttempts.length
@@ -276,7 +266,7 @@ router.get('/:id/analytics', verifyToken, isAdmin, async (req, res) => {
       eligibleStudents,
       attemptedStudents: attemptedEmails.size,
       completedStudents: submittedEmails.size,
-      notAttempted: Math.max(0, eligibleStudents - attemptedEmails.size),
+      notAttempted: notAttemptedList.length,
       participationRate: eligibleStudents ? Math.round((attemptedEmails.size / eligibleStudents) * 10000) / 100 : 0,
       completionRate: eligibleStudents ? Math.round((submittedEmails.size / eligibleStudents) * 10000) / 100 : 0,
       totalAttempts: attempts.length,
@@ -313,14 +303,14 @@ router.get('/:id/analytics', verifyToken, isAdmin, async (req, res) => {
         status: challenge.status
       },
       participation,
-      perStudent
+      perStudent,
+      notAttemptedStudents: notAttemptedList
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error loading analytics', error: error.message });
   }
 });
 
-// Detail (admin) — full questions populated
 router.get('/:id', verifyToken, isAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -339,7 +329,6 @@ router.get('/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// Create draft
 router.post('/', verifyToken, isAdmin, async (req, res) => {
   try {
     const { title, description, questionIds, maxAttempts, availabilityDays, startAt, examId } = req.body;
@@ -380,7 +369,6 @@ router.post('/', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// Publish (or schedule, if startAt is in the future)
 router.post('/:id/publish', verifyToken, isAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -436,7 +424,6 @@ router.post('/:id/publish', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// Duplicate an existing challenge into a new draft
 router.post('/:id/duplicate', verifyToken, isAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -470,7 +457,6 @@ router.post('/:id/duplicate', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// Update (blocked once published with existing attempts)
 router.put('/:id', verifyToken, isAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -522,7 +508,6 @@ router.put('/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// Delete (draft only)
 router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -542,11 +527,6 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════
-// STUDENT-FACING ENDPOINTS (ready for the mobile app; verifyToken only)
-// ════════════════════════════════════════════════════════════════════════
-
-// Own attempt history for a challenge
 router.get('/:id/attempts/mine', verifyToken, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -562,7 +542,6 @@ router.get('/:id/attempts/mine', verifyToken, async (req, res) => {
   }
 });
 
-// Start (or resume) an attempt
 router.post('/:id/attempts/start', verifyToken, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -622,7 +601,6 @@ router.post('/:id/attempts/start', verifyToken, async (req, res) => {
   }
 });
 
-// Submit an attempt
 router.post('/:id/attempts/:attemptId/submit', verifyToken, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id) || !mongoose.isValidObjectId(req.params.attemptId)) {

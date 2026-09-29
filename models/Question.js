@@ -7,7 +7,6 @@ const questionSchema = new mongoose.Schema({
     required: true
   },
   topicId: {
-    // Optional: a unit with no topics under it can still hold questions directly.
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Topic',
     default: null
@@ -86,5 +85,9 @@ const questionSchema = new mongoose.Schema({
     default: Date.now
   }
 });
+
+questionSchema.index({ unitId: 1, topicId: 1, subtopicId: 1 });
+questionSchema.index({ topicId: 1, subtopicId: 1 });
+questionSchema.index({ subtopicId: 1 });
 
 module.exports = mongoose.model('Question', questionSchema);

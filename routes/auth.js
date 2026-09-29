@@ -6,6 +6,14 @@ const router = express.Router();
 const User = require('../models/User');
 const Exam = require('../models/Exam');
 
+const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET is not set');
+  return secret;
+};
+
+const isBcryptHash = (value) => typeof value === 'string' && /^\$2[aby]\$/.test(value);
+
 const loginAttempts = {};
 
 const loginRateLimiter = (req, res, next) => {
@@ -60,14 +68,13 @@ router.post('/login', loginRateLimiter, async (req, res) => {
     }
 
     let isPasswordValid = false;
-    try {
+    if (isBcryptHash(user.password)) {
       isPasswordValid = await bcrypt.compare(password, user.password);
-    } catch (e) {
-      isPasswordValid = false;
-    }
-
-    if (!isPasswordValid) {
-      isPasswordValid = (password === user.password);
+    } else {
+      isPasswordValid = typeof user.password === 'string' && user.password.length > 0 && password === user.password;
+      if (isPasswordValid) {
+        await User.updateOne({ _id: user._id }, { $set: { password: await bcrypt.hash(password, 10) } });
+      }
     }
 
     if (!isPasswordValid) {
@@ -77,7 +84,7 @@ router.post('/login', loginRateLimiter, async (req, res) => {
     const userRole = user.role.toLowerCase();
     const token = jwt.sign(
       { email: user.email, role: userRole },
-      process.env.JWT_SECRET || 'defaultsecret',
+      getJwtSecret(),
       { expiresIn: '24h' }
     );
 
@@ -104,7 +111,7 @@ const verifyToken = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'defaultsecret');
+    const decoded = jwt.verify(token, getJwtSecret());
     req.user = decoded;
     next();
   }
@@ -121,7 +128,6 @@ const isAdmin = (req, res, next) => {
   }
 };
 
-// ─── GET /api/auth/me ──────────────────────────────────────────────────────────
 router.get('/me', verifyToken, async (req, res) => {
   try {
     const user = await User.findOne({ email: req.user.email }).select('-password').populate('examIds', 'name');
@@ -134,8 +140,6 @@ router.get('/me', verifyToken, async (req, res) => {
   }
 });
 
-// Validates a raw examIds array from a request body: must be a valid ObjectId array,
-// and every id must reference an Exam that actually exists.
 const resolveExamIds = async (examIds) => {
   if (examIds === undefined) return undefined;
   if (!Array.isArray(examIds)) {
@@ -153,7 +157,6 @@ const resolveExamIds = async (examIds) => {
   return validIds;
 };
 
-// ─── GET /api/auth/admin/students ─────────────────────────────────────────────
 router.get('/admin/students', verifyToken, isAdmin, async (req, res) => {
   try {
     const students = await User.find({ role: { $in: ['Student', 'student'] } })
@@ -166,7 +169,6 @@ router.get('/admin/students', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ─── POST /api/auth/admin/students ────────────────────────────────────────────
 router.post('/admin/students', verifyToken, isAdmin, async (req, res) => {
   try {
     const { name, email, password, examIds } = req.body;
@@ -210,11 +212,17 @@ router.post('/admin/students', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ─── PUT /api/auth/admin/students/:id ─────────────────────────────────────────
 router.put('/admin/students/:id', verifyToken, isAdmin, async (req, res) => {
   try {
-    const { name, email, status, examIds } = req.body;
+    const { name, email, status, examIds, password } = req.body;
     const update = {};
+
+    if (password !== undefined && password !== '') {
+      if (typeof password !== 'string' || password.length < 6) {
+        return res.status(400).json({ message: 'New password must be at least 6 characters' });
+      }
+      update.password = await bcrypt.hash(password, 10);
+    }
 
     if (name !== undefined) {
       if (!name.trim()) {
@@ -257,7 +265,6 @@ router.put('/admin/students/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
-// ─── DELETE /api/auth/admin/students/:id ──────────────────────────────────────
 router.delete('/admin/students/:id', verifyToken, isAdmin, async (req, res) => {
   try {
     const student = await User.findOneAndDelete({ _id: req.params.id, role: { $in: ['Student', 'student'] } });

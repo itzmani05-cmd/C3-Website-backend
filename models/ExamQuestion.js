@@ -9,8 +9,6 @@ const examQuestionSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  // Which part/section of the test's pattern this question belongs to (e.g. "Part A - General
-  // Aptitude" / "2 Mark Questions"). Empty for plain (non-patterned) tests.
   part: {
     type: String,
     default: ''
@@ -80,5 +78,8 @@ const examQuestionSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+examQuestionSchema.index({ testId: 1, createdAt: 1 });
+examQuestionSchema.index({ testName: 1, part: 1, section: 1 });
 
 module.exports = mongoose.model('ExamQuestion', examQuestionSchema, 'ExamQuestions');

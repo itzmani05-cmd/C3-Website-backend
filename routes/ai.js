@@ -13,17 +13,12 @@ const isAdmin = (req, res, next) => {
 
 router.use(verifyToken, isAdmin);
 
-// Local smart extract - handles multiple formats including inline paragraph format
 function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestions = 25) {
   const questions = [];
   textContent = textContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   console.log(`Extracting from text of length: ${textContent.length}`);
 
-  // Strategy: Split by "Question X:" pattern to get individual questions
-  // Each question ends with a period followed by blank lines or next "Question Y:"
-
-  // Find all "Question X:" patterns
   const questionPattern = /Question\s+\d+:/gi;
   const questionMatches = [];
   let match;
@@ -34,7 +29,6 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
   console.log(`Found ${questionMatches.length} "Question X:" occurrences`);
 
   if (questionMatches.length === 0) {
-    // Fallback: try the old method with "Options:"
     console.log('No "Question X:" found, trying Options: method');
     return extractByOptions(textContent, unitId, topicId, subtopicId, maxQuestions);
   }
@@ -54,25 +48,17 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
         continue;
       }
 
-      // Remove the "Question X:" prefix from the block for parsing
       block = block.replace(/^Question\s+\d+:\s*/i, '');
 
-        // First, let's extract components using regex patterns directly from the block
-        // This is more reliable than line-by-line parsing for inline formats
-
-        // Extract question text (everything before "Options:")
         const qMatch = block.match(/^([\s\S]*?)Options:/i);
         const qText = qMatch ? qMatch[1].trim() : '';
         console.log(`Question text: ${qText.substring(0, 50)}...`);
 
-        // Extract options section (between Options: and Answer labels)
         const optionsMatch = block.match(/Options:([\s\S]*?)(?:Correct Answer|Answer|Ans|Correct Option|Detailed Explanation:|$)/i);
         let optionsText = optionsMatch ? optionsMatch[1].trim() : '';
 
-        // Parse individual options from the options text
         const options = { a: 'Not found', b: 'Not found', c: 'Not found', d: 'Not found' };
 
-        // Find all option patterns like (a) text, (b) text, etc.
         const optPattern = /[\[(]([a-dA-D])[\])][.\)]?\s*([^([\n]*?)(?=[\[(][b-dB-D][\])]|Correct Answer:|Detailed Explanation:|$)/gi;
         let optMatch;
         while ((optMatch = optPattern.exec(optionsText)) !== null) {
@@ -83,7 +69,6 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
           }
         }
 
-        // If regex didn't work, try line by line
         if (Object.values(options).every(v => v === 'Not found')) {
           const optLines = optionsText.split(/\n|(?=[\[(][a-dA-D][\])])/);
           for (const line of optLines) {
@@ -100,7 +85,6 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
 
         console.log(`Options: A=${options.a.substring(0, 20)}..., B=${options.b.substring(0, 20)}...`);
 
-        // Extract correct answer
         let correctAns = 'a';
         const ansMatch = block.match(/(?:Correct Answer|Answer|Ans|Correct Option)\s*[:\-\s]+\s*[\[\(\s]*([a-dA-D])(?:\s*[\)\.\,\]]|\s|$)/i);
         if (ansMatch) {
@@ -108,7 +92,6 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
         }
         console.log(`Correct answer: ${correctAns}`);
 
-        // Extract explanation (everything after "Detailed Explanation:")
         let explanation = '';
         const expMatch = block.match(/Detailed Explanation:([\s\S]*?)$/i);
         if (expMatch) {
@@ -144,7 +127,6 @@ function localSmartExtract(textContent, unitId, topicId, subtopicId, maxQuestion
   return { success: true, questions };
 }
 
-// Local extract endpoint
 router.post('/extract', (req, res) => {
   try {
     const { textContent, unitId, topicId, subtopicId, maxQuestions = 25 } = req.body;
@@ -155,7 +137,6 @@ router.post('/extract', (req, res) => {
   }
 });
 
-// Gemini AI generation endpoint
 router.post('/generate', async (req, res) => {
   try {
     const { textContent, subject, subtopic } = req.body;
@@ -179,7 +160,6 @@ TEXT SOURCE: ${textContent}`;
   "correct_answer": "a", "explanation": "...", "type": "Theory-based MCQ"}]
 Return RAW JSON only.`;
 
-    // Call Gemini API
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
@@ -213,11 +193,9 @@ Return RAW JSON only.`;
   }
 });
 
-// Fallback extraction method using Options:
 function extractByOptions(textContent, unitId, topicId, subtopicId, maxQuestions) {
   const questions = [];
 
-  // Find all "Options:" positions
   const optionsRegex = /Options:/gi;
   const optionsMatches = [];
   let match;
@@ -231,7 +209,6 @@ function extractByOptions(textContent, unitId, topicId, subtopicId, maxQuestions
     try {
       let questionStart = 0;
       if (i > 0) {
-        // Find end of previous question
         const prevEnd = optionsMatches[i - 1];
         const textBetween = textContent.substring(prevEnd, optionsMatches[i]);
         const expMatch = textBetween.match(/Detailed Explanation:[\s\S]*?\.\s*(?=\n|$)/);
@@ -245,7 +222,6 @@ function extractByOptions(textContent, unitId, topicId, subtopicId, maxQuestions
 
       if (!block || block.length < 30) continue;
 
-      // Parse the block
       const qMatch = block.match(/^([\s\S]*?)Options:/i);
       const qText = qMatch ? qMatch[1].trim() : '';
 

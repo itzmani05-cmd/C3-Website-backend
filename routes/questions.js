@@ -16,8 +16,6 @@ const User = require('../models/User');
 const { verifyToken } = require('./auth');
 const { sortQuestionsByPattern } = require('../utils/testPattern');
 
-// This entire router manages authored content (curriculum, questions, tests, exams) —
-// every route requires a logged-in user; individual routes further restrict to admins below.
 router.use(verifyToken);
 
 const isAdmin = (req, res, next) => {
@@ -28,9 +26,7 @@ const isAdmin = (req, res, next) => {
   }
 };
 
-const MAX_IMAGE_BYTES = 150 * 1024; // 150KB — images are stored inline as base64 in MongoDB documents,
-// and a question can carry up to 6 of them (question + 4 options + explanation), so unbounded
-// uploads risk bloating documents (Daily Challenges snapshot-copy question images too).
+const MAX_IMAGE_BYTES = 150 * 1024;
 
 function base64ByteLength(value) {
   if (typeof value !== 'string' || !value) return 0;
@@ -38,9 +34,6 @@ function base64ByteLength(value) {
   return Buffer.byteLength(data, 'base64');
 }
 
-// Checks every image-bearing field a question payload can carry (questionImage, explanationImage,
-// optionImages as either an {a,b,c,d} map or an array) and returns an error message if any exceeds
-// MAX_IMAGE_BYTES, or null if all are within limit. Call this before saving any question-shaped body.
 function findOversizedImage(body) {
   if (!body || typeof body !== 'object') return null;
 
@@ -64,18 +57,12 @@ function findOversizedImage(body) {
   return null;
 }
 
-// Curriculum browsing is the one route students can also hit directly (soft-scoped to
-// their own enrolled exam(s) below) — every other route in this file is admin-only.
-// Returns null for non-students (no restriction), or the (possibly empty) list of exam
-// ids a student is enrolled in — an empty list must still filter results down to nothing,
-// not fall back to "unrestricted".
 const getStudentExamIds = async (req) => {
   if (!req.user || req.user.role !== 'student') return null;
   const student = await User.findOne({ email: req.user.email }).select('examIds');
   return (student?.examIds || []).map((id) => id.toString());
 };
 
-// Get all questions
 router.get('/', isAdmin, async (req, res) => {
   try {
     const { unitId, topicId, subtopicId, status } = req.query;
@@ -142,7 +129,6 @@ router.post('/', isAdmin, async (req, res) => {
   }
 });
 
-// Get all exams (site is scaling to cover multiple exams, e.g. TNPSC AE, TRB, etc.)
 router.get('/exams', isAdmin, async (req, res) => {
   try {
     const exams = await Exam.find().sort({ name: 1 });
@@ -152,7 +138,6 @@ router.get('/exams', isAdmin, async (req, res) => {
   }
 });
 
-// Create an Exam
 router.post('/exams', isAdmin, async (req, res) => {
   try {
     const { name } = req.body;
@@ -173,7 +158,6 @@ router.post('/exams', isAdmin, async (req, res) => {
   }
 });
 
-// Update an Exam
 router.put('/exams/:id', isAdmin, async (req, res) => {
   try {
     const { name } = req.body;
@@ -195,9 +179,6 @@ router.put('/exams/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Delete an Exam (cascades to everything scoped under it: units/topics/subtopics/
-// questions, tests/exam questions/student attempts, daily challenges/attempts, and
-// unenrolls any student who had it in their examIds)
 router.delete('/exams/:id', isAdmin, async (req, res) => {
   try {
     const examId = req.params.id;
@@ -246,7 +227,6 @@ router.delete('/exams/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Get all tests (for extractor/admin destination setup), optionally scoped to an exam
 router.get('/tests', isAdmin, async (req, res) => {
   try {
     const { examId } = req.query;
@@ -258,7 +238,6 @@ router.get('/tests', isAdmin, async (req, res) => {
   }
 });
 
-// Create a Test
 router.post('/tests', isAdmin, async (req, res) => {
   try {
     const { name, publishToStudent, examId, pattern, durationMinutes } = req.body;
@@ -292,14 +271,6 @@ router.post('/tests', isAdmin, async (req, res) => {
   }
 });
 
-// When a part/section's `key` survives between the old and new pattern but its `name` changed,
-// retag every ExamQuestion already saved under the old name — otherwise a rename would silently
-// orphan those questions from negative marking, progress counts, and ordering (see utils/testPattern.js).
-//
-// Section-level renames must run BEFORE the part-level fallback below: both match on the OLD part
-// name, so if the coarse part rename ran first it would already flip every document's `part` to the
-// new name, leaving nothing for the section-specific update (which still filters on the old name) to
-// match — silently dropping the section rename.
 const cascadeRenamePatternSections = async (test, oldPattern, newPattern) => {
   if (!Array.isArray(oldPattern) || !Array.isArray(newPattern)) return;
 
@@ -325,9 +296,6 @@ const cascadeRenamePatternSections = async (test, oldPattern, newPattern) => {
       }
     }
 
-    // Catches anything left under the old part name that no section-specific update above
-    // touched (legacy questions with no section, or a section since removed from the pattern) —
-    // still worth carrying the part rename forward for.
     if (oldPart.name !== newPart.name) {
       await ExamQuestion.updateMany(
         { ...baseFilter, part: oldPart.name, section: { $nin: handledOldSectionNames } },
@@ -337,7 +305,6 @@ const cascadeRenamePatternSections = async (test, oldPattern, newPattern) => {
   }
 };
 
-// Update a Test
 router.put('/tests/:id', isAdmin, async (req, res) => {
   try {
     const { name, publishToStudent, examId, pattern, durationMinutes } = req.body;
@@ -386,7 +353,6 @@ router.put('/tests/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Delete a Test (Cascade deletion of ExamQuestions and StudentExam attempts)
 router.delete('/tests/:id', isAdmin, async (req, res) => {
   try {
     const testId = req.params.id;
@@ -405,7 +371,6 @@ router.delete('/tests/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Create/save an exam question (for test extractor destination)
 router.post('/exam', isAdmin, async (req, res) => {
   try {
     const { testName, testId, part, section } = req.body;
@@ -418,8 +383,6 @@ router.post('/exam', isAdmin, async (req, res) => {
       return res.status(413).json({ message: oversizedImageError });
     }
 
-    // Enforce each pattern section's question cap (e.g. GATE's "5 questions" / "30 questions")
-    // server-side too, so it can't be exceeded by a stale extractor tab or a direct API call.
     if (part && section) {
       const test = testId ? await Test.findById(testId).select('pattern') : await Test.findOne({ name: testName }).select('pattern');
       const patternSection = test?.pattern?.find((p) => p.name === part)?.sections.find((s) => s.name === section);
@@ -446,7 +409,6 @@ router.post('/exam', isAdmin, async (req, res) => {
   }
 });
 
-// Get all questions belonging to a test (for admin PDF/Word export)
 router.get('/exam', isAdmin, async (req, res) => {
   try {
     const { testId, testName } = req.query;
@@ -465,7 +427,6 @@ router.get('/exam', isAdmin, async (req, res) => {
   }
 });
 
-// Get count of questions in a test (optionally scoped to one part/section of its pattern)
 router.get('/exam/count', isAdmin, async (req, res) => {
   try {
     const { testName, part, section } = req.query;
@@ -482,7 +443,6 @@ router.get('/exam/count', isAdmin, async (req, res) => {
   }
 });
 
-// Get per-part/section question counts for a test (drives the extractor's per-section progress)
 router.get('/exam/section-counts', isAdmin, async (req, res) => {
   try {
     const { testName } = req.query;
@@ -499,7 +459,6 @@ router.get('/exam/section-counts', isAdmin, async (req, res) => {
   }
 });
 
-// Update a single exam question (for test question fixer)
 router.put('/exam/:id', isAdmin, async (req, res) => {
   try {
     const oversizedImageError = findOversizedImage(req.body);
@@ -521,7 +480,6 @@ router.put('/exam/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Bulk delete exam questions belonging to a test (keeps the Test itself)
 router.delete('/exam/delete/bulk', isAdmin, async (req, res) => {
   try {
     const { testId, testName } = req.query;
@@ -537,7 +495,6 @@ router.delete('/exam/delete/bulk', isAdmin, async (req, res) => {
   }
 });
 
-// Delete a single exam question
 router.delete('/exam/:id', isAdmin, async (req, res) => {
   try {
     const examQuestion = await ExamQuestion.findByIdAndDelete(req.params.id);
@@ -550,7 +507,6 @@ router.delete('/exam/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Get all daily questions (optionally filtered by date, for daily-questions admin list)
 router.get('/daily', isAdmin, async (req, res) => {
   try {
     const { date } = req.query;
@@ -562,7 +518,6 @@ router.get('/daily', isAdmin, async (req, res) => {
   }
 });
 
-// Create/save a daily question (for daily-questions extractor destination)
 router.post('/daily', isAdmin, async (req, res) => {
   try {
     const { date } = req.body;
@@ -588,7 +543,6 @@ router.post('/daily', isAdmin, async (req, res) => {
   }
 });
 
-// Get count of daily questions for a given date
 router.get('/daily/count', isAdmin, async (req, res) => {
   try {
     const { date } = req.query;
@@ -602,7 +556,6 @@ router.get('/daily/count', isAdmin, async (req, res) => {
   }
 });
 
-// Update a single daily question (for daily question fixer)
 router.put('/daily/:id', isAdmin, async (req, res) => {
   try {
     const oversizedImageError = findOversizedImage(req.body);
@@ -624,7 +577,6 @@ router.put('/daily/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Bulk delete daily questions belonging to a date
 router.delete('/daily/delete/bulk', isAdmin, async (req, res) => {
   try {
     const { date } = req.query;
@@ -638,7 +590,6 @@ router.delete('/daily/delete/bulk', isAdmin, async (req, res) => {
   }
 });
 
-// Delete a single daily question
 router.delete('/daily/:id', isAdmin, async (req, res) => {
   try {
     const dailyQuestion = await DailyQuestion.findByIdAndDelete(req.params.id);
@@ -688,7 +639,6 @@ router.put('/:id', isAdmin, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
-// Bulk delete questions by topicId or subtopicId
 router.delete('/delete/bulk', isAdmin, async (req, res) => {
   try {
     const { topicId, subtopicId } = req.query;
@@ -752,10 +702,6 @@ router.get('/curriculum', async (req, res) => {
     const { examId } = req.query;
     let unitQuery = examId ? { examId } : {};
     if (!examId) {
-      // No explicit exam requested (as admin tools always pass none today) — if the
-      // caller is a logged-in student, scope the curriculum to their enrolled exam(s)
-      // so they only ever see units for exams they're actually enrolled in. A student
-      // enrolled in nothing yet must see nothing, not every exam's units.
       const studentExamIds = await getStudentExamIds(req);
       if (studentExamIds !== null) {
         unitQuery = { examId: { $in: studentExamIds } };
@@ -817,7 +763,6 @@ router.get('/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Create a Unit
 router.post('/units', isAdmin, async (req, res) => {
   try {
     const { name, order, examId } = req.body;
@@ -839,7 +784,6 @@ router.post('/units', isAdmin, async (req, res) => {
   }
 });
 
-// Update a Unit
 router.put('/units/:id', isAdmin, async (req, res) => {
   try {
     const { name, order, examId } = req.body;
@@ -859,7 +803,6 @@ router.put('/units/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Delete a Unit (Cascade deletion of Topics, Subtopics, and Questions)
 router.delete('/units/:id', isAdmin, async (req, res) => {
   try {
     const unitId = req.params.id;
@@ -868,15 +811,12 @@ router.delete('/units/:id', isAdmin, async (req, res) => {
       return res.status(404).json({ message: 'Unit not found' });
     }
 
-    // Find topics under this unit
     const topics = await Topic.find({ unitId });
     const topicIds = topics.map(t => t._id);
 
-    // Find subtopics under those topics
     const subtopics = await Subtopic.find({ topicId: { $in: topicIds } });
     const subtopicIds = subtopics.map(st => st._id);
 
-    // Delete all questions associated with this unit, topics, or subtopics
     await Question.deleteMany({
       $or: [
         { unitId },
@@ -885,13 +825,10 @@ router.delete('/units/:id', isAdmin, async (req, res) => {
       ]
     });
 
-    // Delete subtopics
     await Subtopic.deleteMany({ topicId: { $in: topicIds } });
 
-    // Delete topics
     await Topic.deleteMany({ unitId });
 
-    // Delete unit
     await Unit.findByIdAndDelete(unitId);
 
     res.json({ message: 'Unit and all associated topics, subtopics, and questions deleted successfully' });
@@ -900,7 +837,6 @@ router.delete('/units/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Create a Topic
 router.post('/topics', isAdmin, async (req, res) => {
   try {
     const { name, unitId, order } = req.body;
@@ -915,7 +851,6 @@ router.post('/topics', isAdmin, async (req, res) => {
   }
 });
 
-// Update a Topic
 router.put('/topics/:id', isAdmin, async (req, res) => {
   try {
     const { name, unitId, order } = req.body;
@@ -933,7 +868,6 @@ router.put('/topics/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Delete a Topic (Cascade deletion of Subtopics and Questions)
 router.delete('/topics/:id', isAdmin, async (req, res) => {
   try {
     const topicId = req.params.id;
@@ -942,11 +876,9 @@ router.delete('/topics/:id', isAdmin, async (req, res) => {
       return res.status(404).json({ message: 'Topic not found' });
     }
 
-    // Find subtopics under this topic
     const subtopics = await Subtopic.find({ topicId });
     const subtopicIds = subtopics.map(st => st._id);
 
-    // Delete all questions associated with this topic or its subtopics
     await Question.deleteMany({
       $or: [
         { topicId },
@@ -954,10 +886,8 @@ router.delete('/topics/:id', isAdmin, async (req, res) => {
       ]
     });
 
-    // Delete subtopics
     await Subtopic.deleteMany({ topicId });
 
-    // Delete topic
     await Topic.findByIdAndDelete(topicId);
 
     res.json({ message: 'Topic and all associated subtopics and questions deleted successfully' });
@@ -966,7 +896,6 @@ router.delete('/topics/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Create a Subtopic
 router.post('/subtopics', isAdmin, async (req, res) => {
   try {
     const { name, topicId, order } = req.body;
@@ -981,7 +910,6 @@ router.post('/subtopics', isAdmin, async (req, res) => {
   }
 });
 
-// Update a Subtopic
 router.put('/subtopics/:id', isAdmin, async (req, res) => {
   try {
     const { name, topicId, order } = req.body;
@@ -999,7 +927,6 @@ router.put('/subtopics/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Delete a Subtopic (Cascade deletion of Questions)
 router.delete('/subtopics/:id', isAdmin, async (req, res) => {
   try {
     const subtopicId = req.params.id;
@@ -1008,10 +935,8 @@ router.delete('/subtopics/:id', isAdmin, async (req, res) => {
       return res.status(404).json({ message: 'Subtopic not found' });
     }
 
-    // Delete all questions associated with this subtopic
     await Question.deleteMany({ subtopicId });
 
-    // Delete subtopic
     await Subtopic.findByIdAndDelete(subtopicId);
 
     res.json({ message: 'Subtopic and all associated questions deleted successfully' });
@@ -1020,7 +945,6 @@ router.delete('/subtopics/:id', isAdmin, async (req, res) => {
   }
 });
 
-// Seed curriculum data
 router.post('/curriculum/seed', isAdmin, async (req, res) => {
   try {
     const { examId } = req.body;
@@ -1062,7 +986,6 @@ router.post('/curriculum/seed', isAdmin, async (req, res) => {
       { name: "Acoustics", topicId: topic1_2._id, order: 5 }
     ]);
 
-    // Unit 2
     const unit2 = await Unit.create({ examId, name: "Unit 2: Engineering Survey", order: 2 });
     const topic2_1 = await Topic.create({ name: "Surveying Fundamentals", unitId: unit2._id, order: 1 });
     const topic2_2 = await Topic.create({ name: "Advanced Surveying", unitId: unit2._id, order: 2 });
@@ -1083,7 +1006,6 @@ router.post('/curriculum/seed', isAdmin, async (req, res) => {
       { name: "Modern Surveying Techniques", topicId: topic2_2._id, order: 8 }
     ]);
 
-    // Unit 3
     const unit3 = await Unit.create({ examId, name: "Unit 3: Engineering Mechanics & Strength of Materials", order: 3 });
     const topic3_1 = await Topic.create({ name: "Engineering Mechanics", unitId: unit3._id, order: 1 });
     const topic3_2 = await Topic.create({ name: "Strength of Materials", unitId: unit3._id, order: 2 });

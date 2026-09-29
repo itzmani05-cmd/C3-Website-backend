@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 
 const dailyQuestionSchema = new mongoose.Schema({
   date: {
-    // Stored as 'YYYY-MM-DD' so questions can be grouped/counted per day without timezone drift.
     type: String,
     required: true
   },

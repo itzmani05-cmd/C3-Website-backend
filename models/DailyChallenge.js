@@ -7,7 +7,6 @@ const dailyChallengeSchema = new mongoose.Schema({
     required: true
   },
   dateKey: {
-    // 'YYYY-MM-DD' derived from startAt, used to keep at most one live challenge per day per exam
     type: String,
     required: true
   },
@@ -33,10 +32,6 @@ const dailyChallengeSchema = new mongoose.Schema({
     type: Number,
     default: 5
   },
-  // Frozen at publish time so later edits to a Question don't retroactively change a challenge
-  // students are already attempting (or have completed) — the C3App mobile client reads this
-  // instead of resolving questionIds live. Shape mirrors what the mobile client's snapshot
-  // renderer expects: single/multiple/numerical, matching Question.answerType.
   questionSnapshot: {
     type: [
       {
@@ -96,7 +91,6 @@ const dailyChallengeSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Only one scheduled/published challenge may occupy a given day per exam; draft duplicates are fine.
 dailyChallengeSchema.index(
   { examId: 1, dateKey: 1 },
   { unique: true, partialFilterExpression: { status: { $in: ['scheduled', 'published'] } } }
