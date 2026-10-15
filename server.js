@@ -36,6 +36,7 @@ app.use('/api/questions', require('./routes/questions'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/exam', require('./routes/exam'));
 app.use('/api/daily-challenges', require('./routes/dailyChallenges'));
+app.use('/api/question-bank', require('./routes/questionBank'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Server is running' });
