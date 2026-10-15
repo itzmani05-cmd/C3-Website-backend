@@ -3,7 +3,6 @@ const mongoose = require('mongoose');
 const router = express.Router();
 const DailyChallenge = require('../models/DailyChallenge');
 const DailyChallengeAttempt = require('../models/DailyChallengeAttempt');
-const Question = require('../models/Question');
 const Exam = require('../models/Exam');
 const User = require('../models/User');
 const { verifyToken } = require('./auth');
