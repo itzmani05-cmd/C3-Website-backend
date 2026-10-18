@@ -38,7 +38,7 @@ const findOversizedImage = (body) => {
 
 const EDITABLE_FIELDS = [
   'type', 'answerType', 'question', 'questionImage', 'options', 'optionImages',
-  'correct_answer', 'explanation', 'explanationImage'
+  'correct_answer', 'explanation', 'explanationImage', 'year', 'source'
 ];
 
 const pickEditable = (body) =>

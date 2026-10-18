@@ -70,6 +70,14 @@ const questionBankSchema = new mongoose.Schema({
   explanationImage: {
     type: String,
     default: null
+  },
+  year: {
+    type: Number,
+    default: null
+  },
+  source: {
+    type: String,
+    default: ''
   }
 }, {
   timestamps: true
