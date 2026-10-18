@@ -78,12 +78,43 @@ const questionBankSchema = new mongoose.Schema({
   source: {
     type: String,
     default: ''
+  },
+  marks: {
+    type: Number,
+    default: null
+  },
+  // Numerical answers can be accepted over a range (GATE publishes e.g. 89 to 91); correct_answer holds the midpoint.
+  answerMin: {
+    type: Number,
+    default: null
+  },
+  answerMax: {
+    type: Number,
+    default: null
+  },
+  // Admin review tracking
+  verified: {
+    type: Boolean,
+    default: false
+  },
+  verifiedBy: {
+    type: String,
+    default: ''
+  },
+  verifiedAt: {
+    type: Date,
+    default: null
+  },
+  updatedBy: {
+    type: String,
+    default: ''
   }
 }, {
   timestamps: true
 });
 
-questionBankSchema.index({ topicId: 1, createdAt: 1 });
+// Matches the list query (filter topic, sort by createdAt then _id for stable pages) so it is served from the index.
+questionBankSchema.index({ topicId: 1, createdAt: 1, _id: 1 });
 questionBankSchema.index({ unitId: 1 });
 
 module.exports = mongoose.model('QuestionBankQuestion', questionBankSchema, 'QuestionBank');
