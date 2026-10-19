@@ -74,6 +74,12 @@ const examQuestionSchema = new mongoose.Schema({
   explanationImage: {
     type: String,
     default: null
+  },
+  // Set when this question was copied into the test from the Question Bank, to show where else it was used.
+  bankQuestionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'QuestionBankQuestion',
+    default: null
   }
 }, {
   timestamps: true
@@ -81,5 +87,6 @@ const examQuestionSchema = new mongoose.Schema({
 
 examQuestionSchema.index({ testId: 1, createdAt: 1 });
 examQuestionSchema.index({ testName: 1, part: 1, section: 1 });
+examQuestionSchema.index({ bankQuestionId: 1 }, { sparse: true });
 
 module.exports = mongoose.model('ExamQuestion', examQuestionSchema, 'ExamQuestions');
