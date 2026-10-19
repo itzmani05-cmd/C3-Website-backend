@@ -80,6 +80,12 @@ const questionSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // Set when this question is a copy made from the Question Bank (for a Daily Challenge), to show where else it was used.
+  bankQuestionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'QuestionBankQuestion',
+    default: null
+  },
   timestamp: {
     type: Date,
     default: Date.now
@@ -89,5 +95,6 @@ const questionSchema = new mongoose.Schema({
 questionSchema.index({ unitId: 1, topicId: 1, subtopicId: 1 });
 questionSchema.index({ topicId: 1, subtopicId: 1 });
 questionSchema.index({ subtopicId: 1 });
+questionSchema.index({ bankQuestionId: 1 }, { sparse: true });
 
 module.exports = mongoose.model('Question', questionSchema);
