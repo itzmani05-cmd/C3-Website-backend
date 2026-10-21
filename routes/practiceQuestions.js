@@ -5,6 +5,7 @@ const PracticeQuestion = require('../models/PracticeQuestion');
 const Topic = require('../models/Topic');
 const Unit = require('../models/Unit');
 const { verifyToken } = require('./auth');
+const { attachUsage } = require('../utils/questionUsage');
 
 router.use(verifyToken);
 
@@ -188,6 +189,7 @@ router.get('/', isAdmin, async (req, res) => {
       },
       { $project: { questionImage: 0, explanationImage: 0, optionImages: 0 } }
     ]);
+    await attachUsage(items, 'practiceQuestionId');
     res.json({ items, total, page, limit, totalPages });
   } catch (error) {
     respondError(res, error);

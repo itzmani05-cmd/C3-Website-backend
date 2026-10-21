@@ -1,67 +1,125 @@
-// Student feedback inbox (mounted under /api/feedback, admin only). Students write it in the mobile app.
+// Student feedback inbox, mounted under /api/feedback. Admin only. Students send feedback from the mobile app.
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
-const { prisma, isValidId, isNotFound } = require('../lib/prisma');
-const { queryString, pageParams, pagedResponse, deleteById, serverError, userSearchFilter } = require('../utils/http');
+const Feedback = require('../models/Feedback');
+const { verifyToken } = require('./auth');
 
 const STATUSES = ['open', 'reviewed'];
 const CATEGORIES = ['general', 'bug', 'content', 'suggestion'];
+const DEFAULT_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 50;
 
-const WITH_STUDENT = { user: { select: { id: true, name: true, email: true } } };
+const isAdmin = (req, res, next) => {
+  if (req.user && req.user.role && req.user.role.toLowerCase() === 'admin') {
+    next();
+  } else {
+    res.status(403).json({ message: 'Access denied: Admin only' });
+  }
+};
 
-const serialize = ({ user, ...feedback }) => ({ ...feedback, student: user });
+router.use(verifyToken, isAdmin);
 
+const firstString = (value) => (Array.isArray(value) ? value[0] : value);
+const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const positiveInt = (value, fallback, max = Infinity) => {
+  const number = Number.parseInt(firstString(value), 10);
+  return Number.isFinite(number) && number > 0 ? Math.min(number, max) : fallback;
+};
+
+const serialize = (feedback) => ({
+  _id: feedback._id,
+  student: { id: feedback.userId, name: feedback.studentName || '', email: feedback.studentEmail || '' },
+  category: feedback.category,
+  rating: feedback.rating ?? null,
+  message: feedback.message,
+  platform: feedback.platform || '',
+  appVersion: feedback.appVersion || '',
+  status: feedback.status,
+  reviewedAt: feedback.reviewedAt || null,
+  createdAt: feedback.createdAt,
+});
+
+// A page of feedback, newest first, with the numbers the stat cards need.
 router.get('/', async (req, res) => {
   try {
-    const status = queryString(req.query.status);
-    const category = queryString(req.query.category);
-    const search = (queryString(req.query.search) || '').trim().slice(0, 100);
-    const where = {
-      ...(STATUSES.includes(status) ? { status } : {}),
-      ...(CATEGORIES.includes(category) ? { category } : {}),
-      // Matches the message, or the student's name or email.
-      ...(search ? { OR: [{ message: { contains: search, mode: 'insensitive' } }, { user: { is: userSearchFilter(search) } }] } : {}),
-    };
+    const status = firstString(req.query.status);
+    const category = firstString(req.query.category);
+    const search = String(firstString(req.query.search) || '').trim().slice(0, 100);
 
-    const paging = pageParams(req.query) || { page: 1, pageSize: 10, skip: 0, take: 10 };
-    const [items, total, open, all] = await Promise.all([
-      prisma.feedback.findMany({ where, include: WITH_STUDENT, orderBy: { createdAt: 'desc' }, skip: paging.skip, take: paging.take }),
-      prisma.feedback.count({ where }),
-      prisma.feedback.count({ where: { status: 'open' } }),
-      prisma.feedback.count(),
+    const filter = {};
+    if (STATUSES.includes(status)) filter.status = status;
+    if (CATEGORIES.includes(category)) filter.category = category;
+    if (search) {
+      // Matches the message or the student's name or email.
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ message: pattern }, { studentName: pattern }, { studentEmail: pattern }];
+    }
+
+    const pageSize = positiveInt(req.query.pageSize, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+    const requestedPage = positiveInt(req.query.page, 1);
+
+    const [total, openCount, allCount, ratingStats] = await Promise.all([
+      Feedback.countDocuments(filter),
+      Feedback.countDocuments({ status: 'open' }),
+      Feedback.countDocuments({}),
+      Feedback.aggregate([{ $match: { rating: { $ne: null } } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
     ]);
 
-    res.json({ ...pagedResponse(items.map(serialize), total, paging), counts: { total: all, open, reviewed: all - open } });
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(requestedPage, totalPages);
+    const items = await Feedback.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
+
+    res.json({
+      items: items.map(serialize),
+      total,
+      page,
+      pageSize,
+      totalPages,
+      counts: { total: allCount, open: openCount, reviewed: allCount - openCount },
+      rating: { average: ratingStats[0] ? Math.round(ratingStats[0].average * 10) / 10 : null, count: ratingStats[0]?.count || 0 },
+    });
   } catch (error) {
-    serverError(res, error, 'Server error fetching feedback');
+    console.error('Error fetching feedback:', error);
+    res.status(500).json({ message: 'Server error fetching feedback' });
   }
 });
 
+// Mark a message as reviewed, or open it again.
 router.patch('/:id', async (req, res) => {
   try {
     const { status } = req.body || {};
-    if (!isValidId(req.params.id)) return res.status(404).json({ message: 'Feedback not found' });
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Feedback not found' });
     if (!STATUSES.includes(status)) return res.status(400).json({ message: `status must be one of: ${STATUSES.join(', ')}` });
 
-    const updated = await prisma.feedback.update({
-      where: { id: req.params.id },
-      data: { status, reviewedAt: status === 'reviewed' ? new Date() : null },
-      include: WITH_STUDENT,
-    });
+    const updated = await Feedback.findByIdAndUpdate(
+      req.params.id,
+      { status, reviewedAt: status === 'reviewed' ? new Date() : null },
+      { new: true }
+    ).lean();
+    if (!updated) return res.status(404).json({ message: 'Feedback not found' });
+
     res.json(serialize(updated));
   } catch (error) {
-    if (isNotFound(error)) return res.status(404).json({ message: 'Feedback not found' });
-    serverError(res, error, 'Server error updating feedback');
+    console.error('Error updating feedback:', error);
+    res.status(500).json({ message: 'Server error updating feedback' });
   }
 });
 
 router.delete('/:id', async (req, res) => {
   try {
-    const removed = await deleteById(prisma.feedback, req.params.id);
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ message: 'Feedback not found' });
+    const removed = await Feedback.findByIdAndDelete(req.params.id).lean();
     if (!removed) return res.status(404).json({ message: 'Feedback not found' });
     res.json({ message: 'Feedback deleted' });
   } catch (error) {
-    serverError(res, error, 'Server error deleting feedback');
+    console.error('Error deleting feedback:', error);
+    res.status(500).json({ message: 'Server error deleting feedback' });
   }
 });
 

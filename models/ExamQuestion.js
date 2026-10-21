@@ -80,6 +80,12 @@ const examQuestionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'QuestionBankQuestion',
     default: null
+  },
+  // Set when this question was copied into the test from Practice Questions instead.
+  practiceQuestionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PracticeQuestion',
+    default: null
   }
 }, {
   timestamps: true
@@ -88,5 +94,6 @@ const examQuestionSchema = new mongoose.Schema({
 examQuestionSchema.index({ testId: 1, createdAt: 1 });
 examQuestionSchema.index({ testName: 1, part: 1, section: 1 });
 examQuestionSchema.index({ bankQuestionId: 1 }, { sparse: true });
+examQuestionSchema.index({ practiceQuestionId: 1 }, { sparse: true });
 
 module.exports = mongoose.model('ExamQuestion', examQuestionSchema, 'ExamQuestions');

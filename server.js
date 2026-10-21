@@ -38,6 +38,7 @@ app.use('/api/exam', require('./routes/exam'));
 app.use('/api/daily-challenges', require('./routes/dailyChallenges'));
 app.use('/api/question-bank', require('./routes/questionBank'));
 app.use('/api/practice-questions', require('./routes/practiceQuestions'));
+app.use('/api/feedback', require('./routes/feedback'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Server is running' });

@@ -3,12 +3,10 @@ const mongoose = require('mongoose');
 const router = express.Router();
 const QuestionBankQuestion = require('../models/QuestionBankQuestion');
 const QuestionBankAudit = require('../models/QuestionBankAudit');
-const Question = require('../models/Question');
-const ExamQuestion = require('../models/ExamQuestion');
-const DailyChallenge = require('../models/DailyChallenge');
 const Topic = require('../models/Topic');
 const Unit = require('../models/Unit');
 const { verifyToken } = require('./auth');
+const { attachUsage } = require('../utils/questionUsage');
 
 router.use(verifyToken);
 
@@ -166,52 +164,6 @@ const buildMatch = (query) => {
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
-
-// Flags the questions that were already used, so admins can avoid picking the same one twice:
-//  - usedInChallenge: the latest Daily Challenge that has it (challenges hold copies, linked by bankQuestionId)
-//  - usedInTest: the latest test it was copied into, and how many tests use it
-const attachUsage = async (items) => {
-  if (items.length === 0) return;
-  const ids = items.map((i) => i._id);
-  const [copies, testQuestions] = await Promise.all([
-    Question.find({ bankQuestionId: { $in: ids } }).select('_id bankQuestionId').lean(),
-    ExamQuestion.find({ bankQuestionId: { $in: ids } }).select('bankQuestionId testId testName createdAt').sort({ createdAt: -1 }).lean()
-  ]);
-
-  const challengeUsage = new Map();
-  if (copies.length > 0) {
-    const bankIdByCopy = new Map(copies.map((c) => [String(c._id), String(c.bankQuestionId)]));
-    const challenges = await DailyChallenge.find({ questionIds: { $in: copies.map((c) => c._id) } })
-      .select('title startAt status questionIds')
-      .sort({ startAt: -1 })
-      .lean();
-    for (const challenge of challenges) {
-      for (const copyId of challenge.questionIds) {
-        const bankId = bankIdByCopy.get(String(copyId));
-        if (!bankId) continue;
-        const entry = challengeUsage.get(bankId);
-        if (entry) entry.count += 1;
-        else challengeUsage.set(bankId, { challengeId: challenge._id, title: challenge.title, startAt: challenge.startAt, status: challenge.status, count: 1 });
-      }
-    }
-  }
-
-  const testUsage = new Map();
-  for (const tq of testQuestions) {
-    const bankId = String(tq.bankQuestionId);
-    const testKey = String(tq.testId || tq.testName);
-    const entry = testUsage.get(bankId);
-    if (!entry) testUsage.set(bankId, { testId: tq.testId || null, testName: tq.testName, usedAt: tq.createdAt, tests: new Set([testKey]) });
-    else entry.tests.add(testKey);
-  }
-
-  items.forEach((item) => {
-    const challenge = challengeUsage.get(String(item._id));
-    if (challenge) item.usedInChallenge = challenge;
-    const test = testUsage.get(String(item._id));
-    if (test) item.usedInTest = { testId: test.testId, testName: test.testName, usedAt: test.usedAt, count: test.tests.size };
-  });
-};
 
 const hasText = (field) => ({ $gt: [{ $strLenCP: { $ifNull: [field, ''] } }, 0] });
 const hasNonBlankText = (field) => ({ $gt: [{ $strLenCP: { $trim: { input: { $ifNull: [field, ''] } } } }, 0] });

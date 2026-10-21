@@ -86,6 +86,12 @@ const questionSchema = new mongoose.Schema({
     ref: 'QuestionBankQuestion',
     default: null
   },
+  // Same, when the copy was made from Practice Questions instead.
+  practiceQuestionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PracticeQuestion',
+    default: null
+  },
   timestamp: {
     type: Date,
     default: Date.now
@@ -96,5 +102,6 @@ questionSchema.index({ unitId: 1, topicId: 1, subtopicId: 1 });
 questionSchema.index({ topicId: 1, subtopicId: 1 });
 questionSchema.index({ subtopicId: 1 });
 questionSchema.index({ bankQuestionId: 1 }, { sparse: true });
+questionSchema.index({ practiceQuestionId: 1 }, { sparse: true });
 
 module.exports = mongoose.model('Question', questionSchema);
