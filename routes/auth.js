@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const router = express.Router();
 const User = require('../models/User');
 const Exam = require('../models/Exam');
@@ -14,31 +15,22 @@ const getJwtSecret = () => {
 
 const isBcryptHash = (value) => typeof value === 'string' && /^\$2[aby]\$/.test(value);
 
-const loginAttempts = {};
-
-const loginRateLimiter = (req, res, next) => {
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  const now = Date.now();
-  const limitWindow = 15 * 60 * 1000;
-  const maxAttempts = 5;
-
-  if (!loginAttempts[ip]) {
-    loginAttempts[ip] = [];
-  }
-
-  loginAttempts[ip] = loginAttempts[ip].filter(timestamp => now - timestamp < limitWindow);
-
-  if (loginAttempts[ip].length >= maxAttempts) {
-    return res.status(429).json({
-      message: 'Too many login attempts. Please try again after 15 minutes.'
-    });
-  }
-
-  loginAttempts[ip].push(now);
-  next();
+// Only failed logins count, so many students signing in from one shared IP (a classroom) are not locked out.
+// Limited per account and IP, plus a looser per-IP cap against one address trying many accounts.
+const failedLoginOptions = {
+  windowMs: 15 * 60 * 1000,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many failed login attempts. Please try again after 15 minutes.' }
 };
-
-
+const loginAccountLimiter = rateLimit({
+  ...failedLoginOptions,
+  limit: 8,
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip)}|${String(req.body?.email || '').trim().toLowerCase()}`
+});
+const loginIpLimiter = rateLimit({ ...failedLoginOptions, limit: 100, keyGenerator: (req) => ipKeyGenerator(req.ip) });
+const loginRateLimiter = [loginIpLimiter, loginAccountLimiter];
 
 router.post('/login', loginRateLimiter, async (req, res) => {
   try {

@@ -56,10 +56,19 @@ const examQuestionSchema = new mongoose.Schema({
     validate: {
       validator: function (value) {
         if (value === undefined || value === null) return true;
-        if (this.answerType === 'multiple') {
+        // On a document `this` is the question; in an update validator (findByIdAndUpdate) it is the query,
+        // so the answerType has to come from the update itself.
+        let answerType = this.answerType;
+        if (typeof this.getUpdate === 'function') {
+          const update = this.getUpdate() || {};
+          answerType = update.$set?.answerType ?? update.answerType;
+          // An update that changes the answer without saying which type it is cannot be checked here.
+          if (!answerType) return true;
+        }
+        if (answerType === 'multiple') {
           return Array.isArray(value) && value.every((v) => ['a', 'b', 'c', 'd'].includes(v));
         }
-        if (this.answerType === 'numerical') {
+        if (answerType === 'numerical') {
           return typeof value === 'string' || typeof value === 'number';
         }
         return ['a', 'b', 'c', 'd'].includes(value);

@@ -476,6 +476,9 @@ router.put('/exam/:id', isAdmin, async (req, res) => {
     }
     res.json(examQuestion);
   } catch (error) {
+    if (error.name === 'ValidationError' || error.name === 'CastError') {
+      return res.status(400).json({ message: error.message });
+    }
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
@@ -644,14 +647,19 @@ router.delete('/delete/bulk', isAdmin, async (req, res) => {
     const { topicId, subtopicId } = req.query;
     let query = {};
 
-    if (!topicId && !subtopicId) {
-      return res.status(400).json({ message: 'At least topicId or subtopicId is required' });
-    }
-
-    if (subtopicId && subtopicId !== 'all') {
+    // Never fall through to an empty filter: that would delete every question in the collection.
+    if (subtopicId) {
+      if (!mongoose.isValidObjectId(subtopicId)) {
+        return res.status(400).json({ message: 'Invalid subtopicId' });
+      }
       query.subtopicId = subtopicId;
-    } else if (topicId && topicId !== 'all') {
+    } else if (topicId) {
+      if (!mongoose.isValidObjectId(topicId)) {
+        return res.status(400).json({ message: 'Invalid topicId' });
+      }
       query.topicId = topicId;
+    } else {
+      return res.status(400).json({ message: 'A topicId or subtopicId is required' });
     }
 
     const result = await Question.deleteMany(query);
